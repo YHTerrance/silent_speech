@@ -33,9 +33,9 @@ from torch.utils.data import DataLoader
 from dataloaders import cache_dataset
 
 # DATA_FOLDER    = '/scratch/GaddyPaper'
-DATA_FOLDER = os.path.join(os.environ["SCRATCH"], "GaddyPaper")
+DATA_FOLDER = os.environ["SCRATCH"]
 # project_folder = '/home/tyler/code/silent_speech'
-project_folder = "/home/users/tbenst/code/silent_speech/"
+PROJECT_FOLDER = os.environ["PROJECT"]
 
 REMOVE_CHANNELS = []
 SILENT_DATA_DIRECTORIES = [f"{DATA_FOLDER}/emg_data/silent_parallel_data"]
@@ -45,7 +45,7 @@ SILENT_DATA_DIRECTORIES = [f"{DATA_FOLDER}/emg_data/silent_parallel_data"]
 # this is for convenience in the dataloader
 VOICED_DATA_DIRECTORIES = [f"{DATA_FOLDER}/emg_data/nonparallel_data"]
 PARALLEL_DATA_DIRECTORIES = [f"{DATA_FOLDER}/emg_data/voiced_parallel_data"]
-TESTSET_FILE = f"{project_folder}/testset_largedev.json"
+TESTSET_FILE = f"{PROJECT_FOLDER}/testset_largedev.json"
 TEXT_ALIGN_DIRECTORY = f"{DATA_FOLDER}/text_alignments"
 
 

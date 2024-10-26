@@ -9,7 +9,14 @@
 # %load_ext autoreload
 # %autoreload 2
 ##
-import os, subprocess
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file
+load_dotenv()
+
+import os, subprocess, sys
+
+sys.path.append("./")
 
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:cudaMallocAsync" # no OOM
 # os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -44,7 +51,8 @@ from read_emg import (
     EMGDataModule,
     ensure_folder_on_scratch,
 )
-from architecture import Model, S4Model, H3Model, ResBlock, MONAConfig, MONA
+# from architecture import Model, S4Model, H3Model, ResBlock, MONAConfig, MONA
+from architecture import MONAConfig, MONA
 from data_utils import combine_fixed_length, decollate_tensor
 from transformer import TransformerEncoderLayer
 from pytorch_lightning.loggers import NeptuneLogger
@@ -65,7 +73,7 @@ from data_utils import TextTransform, in_notebook
 from typing import List
 from collections import defaultdict
 from enum import Enum
-from magneto.preprocessing import ensure_data_on_scratch
+# from magneto.preprocessing import ensure_data_on_scratch
 from dataloaders import (
     LibrispeechDataset,
     EMGAndSpeechModule,
@@ -108,7 +116,6 @@ DEBUG = False
 # TODO:
 # # check if a SLURM re-queue
 # neptune_logger.experiment["SLURM_JOB_ID"] = os.environ["SLURM_JOB_ID"]
-
 
 # https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
 # not sure if makes a difference when we use fp16 / bf16

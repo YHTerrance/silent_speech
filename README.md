@@ -29,7 +29,7 @@ First build the `environment.yml`. Then,
 ```
 > conda install libsndfile -c conda-forge
 > 
-> pip install jiwer torchaudio matplotlib scipy soundfile absl-py librosa numba unidecode praat-textgrids g2p_en einops opt_einsum hydra-core pytorch_lightning "neptune-client==0.16.18"
+> pip install jiwer torchaudio matplotlib scipy soundfile absl-py librosa numba unidecode praat-textgrids g2p_en einops opt_einsum hydra-core pytorch_lightning "neptune-client==0.16.18 python-dotenv aiocache"
 ```
 
 
