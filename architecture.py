@@ -47,9 +47,9 @@ class Model(nn.Module):
         super().__init__()
 
         self.conv_blocks = nn.Sequential(
-            ResBlock(8, FLAGS.model_size, 2),
+            ResBlock(num_features, FLAGS.model_size, 2),
             ResBlock(FLAGS.model_size, FLAGS.model_size, 2),
-            ResBlock(FLAGS.model_size, FLAGS.model_size, 2),
+            # ResBlock(FLAGS.model_size, FLAGS.model_size, 2),
         )
         self.w_raw_in = nn.Linear(FLAGS.model_size, FLAGS.model_size)
 
@@ -71,11 +71,12 @@ class Model(nn.Module):
     def forward(self, x_raw):
         # x shape is (batch, time, electrode)
 
-        if self.training:
-            r = random.randrange(8)
-            if r > 0:
-                x_raw[:, :-r, :] = x_raw[:, r:, :]  # shift left r
-                x_raw[:, -r:, :] = 0
+        # TODO: figure out wtf this is
+        # if self.training:
+        #     r = random.randrange(8)
+        #     if r > 0:
+        #         x_raw[:, :-r, :] = x_raw[:, r:, :]  # shift left r
+        #         x_raw[:, -r:, :] = 0
 
         x_raw = x_raw.transpose(1, 2)  # put channel before time for conv
         x_raw = self.conv_blocks(x_raw)

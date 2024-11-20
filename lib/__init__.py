@@ -5,6 +5,7 @@ import librosa
 import string
 import math
 import mne
+from sklearn.preprocessing import RobustScaler
 
 import pandas as pd
 import soundfile as sf
@@ -278,6 +279,36 @@ def get_phone_idxs(audio_start,
 """
 
 
+def preprocess_eeg(eeg_data):  # based on Meta
+    # Remove last two channels
+    eeg_data = eeg_data[:-2, :]
+
+    # Apply baseline correction
+    baseline = np.mean(eeg_data[:, : int(0.5 * 120)], axis=1)
+    eeg_data -= baseline[:, None]
+
+    # Robust scaling using scikit-learn
+    scaler = RobustScaler()
+    eeg_data = scaler.fit_transform(eeg_data.T).T
+
+    # Clipping the outliers below 5th percentile and above 95th percentile
+    eeg_data = np.clip(
+        eeg_data, np.percentile(eeg_data, 5), np.percentile(eeg_data, 95)
+    )
+
+    # Clamping values greater than 20 standard deviations
+    std = np.std(eeg_data)
+    mean = np.mean(eeg_data)
+    eeg_data = np.clip(eeg_data, mean - 20 * std, mean + 20 * std)
+
+    # Standard normalization for EEG
+    eeg_mean = eeg_data.mean()
+    eeg_std = eeg_data.std()
+    eeg_data = (eeg_data - eeg_mean) / eeg_std
+
+    return eeg_data
+
+
 class BrennanDataset(torch.utils.data.Dataset):
     num_features = 60 * 5
     num_mels = 128
@@ -336,6 +367,8 @@ class BrennanDataset(torch.utils.data.Dataset):
             )
             for audio_raw in self.audio_raw_s
         ]
+        # self.num_speech_features = self.audio_feat_s.shape[1]
+        # self.num_features = self.eeg_data.shape[1]
 
         # Phoneme Dictionary
         phoneme_dict = load_phoneme_dict(phoneme_dict_path)
@@ -400,7 +433,9 @@ class BrennanDataset(torch.utils.data.Dataset):
         eeg_x = self.eeg_data[:, eeg_start_idx:eeg_end_idx]
         eeg_x = notch_harmonics(eeg_x, powerline_freq, 500)
         eeg_x = remove_drift(eeg_x, 500)
-        eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4)
+        # Meta's preprocessing
+        eeg_x = preprocess_eeg(eeg_x)
+        eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4, stft=False)
         eeg_raw = apply_to_all(subsample, eeg_x.T, 400, 500)
 
         # Phoneme Segment

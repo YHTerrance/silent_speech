@@ -349,15 +349,15 @@ class EMGDataset(torch.utils.data.Dataset):
         text_int = np.array(self.text_transform.text_to_int(text), dtype=np.int64)
 
         result = {
-            "audio_features": torch.from_numpy(mfccs).pin_memory(),
-            "emg": torch.from_numpy(emg).pin_memory(),
-            "text": text,
+            "audio_features": torch.from_numpy(mfccs).pin_memory(),  # 224 x 80
+            "emg": torch.from_numpy(emg).pin_memory(),  # 224 * 112
+            "text": text,  # e.g. "But of what society"
             "text_int": torch.from_numpy(text_int).pin_memory(),
             "file_label": idx,
-            "session_ids": torch.from_numpy(session_ids).pin_memory(),
+            "session_ids": torch.from_numpy(session_ids).pin_memory(),  #
             "book_location": book_location,
             "silent": directory_info.silent,
-            "raw_emg": torch.from_numpy(raw_emg).pin_memory(),
+            "raw_emg": torch.from_numpy(raw_emg).pin_memory(),  # 1792 x 8
         }
 
         if directory_info.silent:
@@ -382,13 +382,9 @@ class EMGDataset(torch.utils.data.Dataset):
             audio_file = f"{voiced_directory.directory}/{voiced_idx}_audio_clean.flac"
 
         result["phonemes"] = torch.from_numpy(
-            phonemes
+            phonemes  # 224
         ).pin_memory()  # either from this example if vocalized or aligned example if silent
         result["audio_file"] = audio_file
-
-        import pdb
-
-        pdb.set_trace()
 
         return result
 

@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import logging
 import subprocess
+from pathlib import Path
 
 import soundfile as sf
 import tqdm
@@ -19,7 +20,7 @@ from vocoder import Vocoder
 
 from absl import flags
 
-from read_eeg import create_datasets
+from read_eeg import create_datasets, collate_fn
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("batch_size", 32, "training batch size")
@@ -52,7 +53,7 @@ def test(model, testset, device):
             #     [t.to(device, non_blocking=True) for t in batch["emg"]], seq_len
             # )
             X_raw = combine_fixed_length(
-                [t.to(device, non_blocking=True) for t in batch["raw_emg"]], seq_len * 8
+                [t.to(device, non_blocking=True) for t in batch["eeg_raw"]], seq_len * 8
             )
             # sess = combine_fixed_length(
             #     [t.to(device, non_blocking=True) for t in batch["session_ids"]], seq_len
@@ -80,7 +81,7 @@ def save_output(model, datapoint, filename, device, audio_normalizer, vocoder):
     with torch.no_grad():
         sess = datapoint["session_ids"].to(device=device).unsqueeze(0)
         X = datapoint["emg"].to(dtype=torch.float32, device=device).unsqueeze(0)
-        X_raw = datapoint["raw_emg"].to(dtype=torch.float32, device=device).unsqueeze(0)
+        X_raw = datapoint["eeg_raw"].to(dtype=torch.float32, device=device).unsqueeze(0)
 
         pred, _ = model(X, X_raw, sess)
         y = pred.squeeze(0)
@@ -100,9 +101,9 @@ def get_aligned_prediction(model, datapoint, device, audio_normalizer):
         silent = datapoint["silent"]
         sess = datapoint["session_ids"].to(device).unsqueeze(0)
         X = datapoint["emg"].to(device).unsqueeze(0)
-        X_raw = datapoint["raw_emg"].to(device).unsqueeze(0)
+        X_raw = datapoint["eeg_raw"].to(device).unsqueeze(0)
         y = (
-            datapoint["parallel_voiced_audio_features" if silent else "audio_features"]
+            datapoint["parallel_voiced_audio_feats" if silent else "audio_feats"]
             .to(device)
             .unsqueeze(0)
         )
@@ -122,7 +123,7 @@ def get_aligned_prediction(model, datapoint, device, audio_normalizer):
     return pred_aligned
 
 
-# Used key: lengths, audio_features, phonemes, silent
+# Used key: lengths, audio_feats, phonemes, silent
 def dtw_loss(
     predictions,
     phoneme_predictions,
@@ -135,9 +136,7 @@ def dtw_loss(
     predictions = decollate_tensor(predictions, example["lengths"])
     phoneme_predictions = decollate_tensor(phoneme_predictions, example["lengths"])
 
-    audio_features = [
-        t.to(device, non_blocking=True) for t in example["audio_features"]
-    ]
+    audio_feats = [t.to(device, non_blocking=True) for t in example["audio_feats"]]
 
     phoneme_targets = example["phonemes"]
 
@@ -146,7 +145,7 @@ def dtw_loss(
     total_length = 0
     for pred, y, pred_phone, y_phone in zip(
         predictions,
-        audio_features,
+        audio_feats,
         phoneme_predictions,
         phoneme_targets,
         # example["silent"],
@@ -180,7 +179,7 @@ def dtw_loss(
         # else:
         assert y.size(0) == pred.size(0)
 
-        dists = F.pairwise_distance(y, pred)
+        dists = F.pairwise_distance(y, pred)  # audio_feats v.s. model output
 
         assert len(pred_phone.size()) == 2 and len(y_phone.size()) == 1
         phoneme_loss = F.cross_entropy(pred_phone, y_phone, reduction="sum")
@@ -199,24 +198,33 @@ def dtw_loss(
     return sum(losses) / total_length, correct_phones / total_length
 
 
-def train_model(trainset, devset, device, save_sound_outputs=True):
+def train_model(
+    trainset,
+    devset,
+    device,
+    num_features,
+    num_speech_features,
+    save_sound_outputs=False,
+):
     n_epochs = FLAGS.epochs
 
-    if FLAGS.data_size_fraction >= 1:
-        training_subset = trainset
-    else:
-        training_subset = trainset.subset(FLAGS.data_size_fraction)
+    # if FLAGS.data_size_fraction >= 1:
+    training_subset = trainset
+    # else:
+    # training_subset = trainset.subset(FLAGS.data_size_fraction)
 
     dataloader = torch.utils.data.DataLoader(
         training_subset,
         pin_memory=(device == "cuda"),
-        collate_fn=devset.collate_raw,
+        collate_fn=collate_fn,
         num_workers=0,
-        batch_sampler=SizeAwareSampler(training_subset, 256000),
+        batch_size=32,
+        # batch_sampler=SizeAwareSampler(training_subset, 256000),
     )
 
     n_phones = len(phoneme_inventory)
-    model = Model(devset.num_features, devset.num_speech_features, n_phones).to(device)
+
+    model = Model(num_features, num_speech_features, n_phones).to(device)
 
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(FLAGS.start_training_from)
@@ -241,7 +249,7 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
         if iteration <= FLAGS.learning_rate_warmup:
             set_lr(iteration * target_lr / FLAGS.learning_rate_warmup)
 
-    seq_len = 200
+    # seq_len = 200 TODO: Not used as we do not understood its purpose see below
 
     batch_idx = 0
     for epoch_idx in range(n_epochs):
@@ -253,12 +261,15 @@ def train_model(trainset, devset, device, save_sound_outputs=True):
             # X = combine_fixed_length(
             #     [t.to(device, non_blocking=True) for t in batch["emg"]], seq_len
             # )
-            X_raw = combine_fixed_length(
-                [t.to(device, non_blocking=True) for t in batch["raw_emg"]], seq_len * 8
-            )
+
+            # X_raw = combine_fixed_length(
+            #     [t.to(device, non_blocking=True) for t in batch["eeg_raw"]], seq_len * 8
+            # )
             # sess = combine_fixed_length(
             #     [t.to(device, non_blocking=True) for t in batch["session_ids"]], seq_len
             # )
+
+            X_raw = batch["eeg_raw"].float().to(device)
 
             pred, phoneme_pred = model(X_raw)
 
@@ -328,9 +339,18 @@ def main():
 
     logging.info(sys.argv)
 
-    trainset = EMGDataset(dev=False, test=False)
-    devset = EMGDataset(dev=True)
-    logging.info("output example: %s", devset.example_indices[0])
+    # trainset = EMGDataset(dev=False, test=False)
+    # devset = EMGDataset(dev=True)
+
+    base_dir = Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
+    subjects_used = ["S04"]
+    trainset, devset, _ = create_datasets(subjects_used, base_dir)
+    sample_audio_feats = trainset[0]["audio_feats"]
+    sample_raw_eeg = trainset[0]["eeg_raw"]
+    num_features = sample_raw_eeg.shape[-1]
+    num_speech_features = sample_audio_feats.shape[-1]
+
+    # logging.info("output example: %s", devset.example_indices[0])
     logging.info("train / dev split: %d %d", len(trainset), len(devset))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -339,6 +359,8 @@ def main():
         trainset,
         devset,
         device,
+        num_features=num_features,
+        num_speech_features=num_speech_features,
         save_sound_outputs=(FLAGS.hifigan_checkpoint is not None),
     )
 
