@@ -13,6 +13,8 @@ from textgrids import TextGrid
 
 import matplotlib.pyplot as plt
 
+from sklearn.preprocessing import RobustScaler
+
 # fmt: off
 phoneme_inventory = ['aa','ae','ah','ao','aw','ax','axr','ay','b','ch','d','dh','dx','eh','el','em','en','er','ey','f','g','hh','hv','ih','iy','jh','k','l','m','n','nx','ng','ow','oy','p','r','s','sh','t','th','uh','uw','v','w','y','z','zh','sil']
 # fmt: on
@@ -207,6 +209,33 @@ def load_phoneme_dict(phoneme_dict_path):
         content = [l.split(":")[1].strip() for l in f.read().split("\n")]
     return content
 
+def preprocess_eeg(eeg_data): # based on Meta
+    # Remove last two channels
+    eeg_data = eeg_data[:-2, :]
+
+    # Apply baseline correction
+    baseline = np.mean(eeg_data[:, :int(0.5 * 120)], axis=1)
+    eeg_data -= baseline[:, None]
+
+    # Robust scaling using scikit-learn
+    scaler = RobustScaler()
+    eeg_data = scaler.fit_transform(eeg_data.T).T
+
+    # Clipping the outliers below 5th percentile and above 95th percentile
+    eeg_data = np.clip(eeg_data, np.percentile(eeg_data, 5), np.percentile(eeg_data, 95))
+
+    # Clamping values greater than 20 standard deviations
+    std = np.std(eeg_data)
+    mean = np.mean(eeg_data)
+    eeg_data = np.clip(eeg_data, mean - 20 * std, mean + 20 * std)
+
+    # Standard normalization for EEG
+    eeg_mean = eeg_data.mean()
+    eeg_std = eeg_data.std()
+    eeg_data = (eeg_data - eeg_mean) / eeg_std
+
+    return eeg_data
+
 
 """
 def get_phone_idxs(audio_start,
@@ -291,6 +320,7 @@ class BrennanDataset(torch.utils.data.Dataset):
         max_items=0,
         phoneme_dict_path="./phoneme_dict.txt",
         debug=False,
+        augmented_eeg_dict = None,
     ):
         self.root_dir = root_dir
         self.idx = idx
@@ -316,6 +346,12 @@ class BrennanDataset(torch.utils.data.Dataset):
         eeg_path = os.path.join(root_dir, f"{idx}.vhdr")
         eeg_data = load_eeg(eeg_path)
         self.eeg_data = eeg_data
+        
+        #Augmented EEG
+        if augmented_eeg_dict is not None:
+            self.augmented_eeg_dict = augmented_eeg_dict
+        else:
+            self.augmented_eeg_dict = None
 
         # Audio
         audio_dir = os.path.join(root_dir, "audio")
@@ -399,12 +435,33 @@ class BrennanDataset(torch.utils.data.Dataset):
         eeg_end_idx = int(cur_eeg_segment[1]) + brain_shift
         eeg_x = self.eeg_data[:, eeg_start_idx:eeg_end_idx]
         eeg_x = notch_harmonics(eeg_x, powerline_freq, 500)
+        #print('eeg raw shape:', eeg_x.shape)
         eeg_x = remove_drift(eeg_x, 500)
+        #print('eeg raw shape:', eeg_x.shape)
+        #print('eeg feats shape:', eeg_feats.shape)
+        eeg_x = preprocess_eeg(eeg_x)   #New from meta (Kate)
+        #print('eeg raw shape2:', eeg_x.shape)
         eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4)
         eeg_raw = apply_to_all(subsample, eeg_x.T, 400, 500)
+        
+        #print('eeg raw shape3:', eeg_raw.shape)
+        #print('eeg feats shape:', eeg_feats.shape)
+        
+        
+        
+        
+        
 
         # Phoneme Segment
         phonemes = self.phoneme_s[audio_segment][audio_start_win:audio_end_win]
+        
+        # Augmented EEG
+        if self.augmented_eeg_dict is not None:
+            eeg_augmented = self.augmented_eeg_dict[label]
+            randint = np.random.randint(0, len(eeg_augmented))
+            eeg_augmented = eeg_augmented[randint]
+        else:
+            eeg_augmented = None
 
         """
         # Phoneme Segment
@@ -418,7 +475,8 @@ class BrennanDataset(torch.utils.data.Dataset):
                 self.phoneme_dict,
                 debug=self.debug)
         """
-
+        
+        
         # Dict Segment
         data = {
             "label": label,
@@ -427,6 +485,7 @@ class BrennanDataset(torch.utils.data.Dataset):
             "eeg_raw": eeg_raw,
             "eeg_feats": eeg_feats,
             "phonemes": phonemes,
+            "eeg_augmented": eeg_augmented
         }
 
         if self.debug:
