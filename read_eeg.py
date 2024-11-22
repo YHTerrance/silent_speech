@@ -95,7 +95,6 @@ def collate_fn(batch):
     applies padding to variable-length sequences.
     """
     batch_dict = {}
-    lengths = [ex["audio_feats"].shape[0] for ex in batch]
     for key in batch[0].keys():
         batch_items = [item[key] for item in batch]
         if isinstance(batch_items[0], np.ndarray) or isinstance(
@@ -111,14 +110,14 @@ def collate_fn(batch):
                 batch_dict[key] = torch.stack(batch_items)
         else:
             batch_dict[key] = batch_items
+
+    lengths = [a.shape[0] for a in batch_dict["audio_feats"]]
     batch_dict["lengths"] = torch.tensor(lengths)
     return batch_dict
 
 
 if __name__ == "__main__":
-    train_ds, test_ds = create_datasets(subjects_used, base_dir)
-    train_dataset = ConcatDataset(train_ds)
-    test_dataset = ConcatDataset(test_ds)
+    train_dataset, val_dataset, test_dataset = create_datasets(subjects_used, base_dir)
     print(
         f"Train dataset length: {len(train_dataset)}, Test dataset length: {len(test_dataset)}"
     )

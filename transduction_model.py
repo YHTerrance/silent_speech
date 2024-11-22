@@ -41,7 +41,7 @@ def test(model, testset, device):
     model.eval()
 
     dataloader = torch.utils.data.DataLoader(
-        testset, batch_size=32, collate_fn=testset.collate_raw
+        testset, batch_size=32, collate_fn=collate_fn
     )
     losses = []
     accuracies = []
@@ -52,13 +52,13 @@ def test(model, testset, device):
             # X = combine_fixed_length(
             #     [t.to(device, non_blocking=True) for t in batch["emg"]], seq_len
             # )
-            X_raw = combine_fixed_length(
-                [t.to(device, non_blocking=True) for t in batch["eeg_raw"]], seq_len * 8
-            )
+            # X_raw = combine_fixed_length(
+            #     [t.to(device, non_blocking=True) for t in batch["eeg_raw"]], seq_len * 8
+            # )
             # sess = combine_fixed_length(
             #     [t.to(device, non_blocking=True) for t in batch["session_ids"]], seq_len
             # )
-
+            X_raw = batch["eeg_raw"].float().to(device)
             pred, phoneme_pred = model(X_raw)
 
             loss, phon_acc = dtw_loss(
@@ -76,17 +76,19 @@ def test(model, testset, device):
     )  # TODO size-weight average
 
 
-def save_output(model, datapoint, filename, device, audio_normalizer, vocoder):
+def save_output(model, datapoint, filename, device, vocoder):  # audio_normalizer,
     model.eval()
     with torch.no_grad():
-        sess = datapoint["session_ids"].to(device=device).unsqueeze(0)
-        X = datapoint["emg"].to(dtype=torch.float32, device=device).unsqueeze(0)
-        X_raw = datapoint["eeg_raw"].to(dtype=torch.float32, device=device).unsqueeze(0)
+        X_raw = (
+            torch.Tensor(datapoint["eeg_raw"])
+            .to(dtype=torch.float32, device=device)
+            .unsqueeze(0)
+        )
 
-        pred, _ = model(X, X_raw, sess)
+        pred, _ = model(X_raw)
         y = pred.squeeze(0)
 
-        y = audio_normalizer.inverse(y.cpu()).to(device)
+        # y = audio_normalizer.inverse(y.cpu()).to(device)
 
         audio = vocoder(y).cpu().numpy()
 
@@ -153,31 +155,13 @@ def dtw_loss(
         assert len(pred.size()) == 2 and len(y.size()) == 2
         y_phone = y_phone.to(device)
 
-        # if silent:
-        #     dists = torch.cdist(pred.unsqueeze(0), y.unsqueeze(0))
-        #     costs = dists.squeeze(0)
+        if y.size(0) != pred.size(0):
+            print(f"y: {y.size()}, pred: {pred.size()}")
+            # print all pred's length
+            for p in predictions:
+                print(p.size())
 
-        #     # pred_phone (seq1_len, 48), y_phone (seq2_len)
-        #     # phone_probs (seq1_len, seq2_len)
-        #     pred_phone = F.log_softmax(pred_phone, -1)
-        #     phone_lprobs = pred_phone[:, y_phone]
-
-        #     costs = costs + FLAGS.phoneme_loss_weight * -phone_lprobs
-
-        #     alignment = align_from_distances(costs.T.cpu().detach().numpy())
-
-        #     loss = costs[alignment, range(len(alignment))].sum()
-
-        #     if phoneme_eval:
-        #         alignment = align_from_distances(costs.T.cpu().detach().numpy())
-
-        #         pred_phone = pred_phone.argmax(-1)
-        #         correct_phones += (pred_phone[alignment] == y_phone).sum().item()
-
-        #         for p, t in zip(pred_phone[alignment].tolist(), y_phone.tolist()):
-        #             phoneme_confusion[p, t] += 1
-        # else:
-        assert y.size(0) == pred.size(0)
+        assert y.size(0) == pred.size(0), f"{y.size()} != {pred.size()}"
 
         dists = F.pairwise_distance(y, pred)  # audio_feats v.s. model output
 
@@ -272,8 +256,19 @@ def train_model(
             X_raw = batch["eeg_raw"].float().to(device)
 
             pred, phoneme_pred = model(X_raw)
+            try:
+                loss, _ = dtw_loss(pred, phoneme_pred, batch)
+            except Exception as e:
+                print(
+                    f"x_raw: {X_raw.shape}, pred: {pred.shape}, phoneme_pred: {phoneme_pred.shape}"
+                )
+                print(
+                    f"audio: {batch['audio_feats'].shape}, phonemes targets: {batch['phonemes'].shape}"
+                )
+                import pdb
 
-            loss, _ = dtw_loss(pred, phoneme_pred, batch)
+                pdb.set_trace()
+                exit(1)
             losses.append(loss.item())
 
             loss.backward()
@@ -293,7 +288,7 @@ def train_model(
                 devset[0],
                 os.path.join(FLAGS.output_directory, f"epoch_{epoch_idx}_output.wav"),
                 device,
-                devset.mfcc_norm,
+                # devset.mfcc_norm,
                 vocoder,
             )
 
@@ -304,7 +299,7 @@ def train_model(
                 datapoint,
                 os.path.join(FLAGS.output_directory, f"example_output_{i}.wav"),
                 device,
-                devset.mfcc_norm,
+                # devset.mfcc_norm,
                 vocoder,
             )
 
