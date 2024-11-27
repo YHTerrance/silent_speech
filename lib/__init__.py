@@ -7,6 +7,7 @@ import math
 import mne
 from sklearn.preprocessing import RobustScaler
 
+import pdb
 import pandas as pd
 import soundfile as sf
 import numpy as np
@@ -96,7 +97,8 @@ def get_semg_feats_orig(
             plt.plot(r_h)
 
             plt.subplot(7, 1, 7)
-            plt.imshow(s, origin="lower", aspect="auto", interpolation="nearest")
+            plt.imshow(s, origin="lower", aspect="auto",
+                       interpolation="nearest")
 
             plt.show()
 
@@ -316,6 +318,7 @@ class BrennanDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
+        tokenizer,
         root_dir,
         phoneme_dir,
         idx,
@@ -328,20 +331,34 @@ class BrennanDataset(torch.utils.data.Dataset):
         self.phoneme_dir = phoneme_dir
         self.phoneme_dict_path = phoneme_dict_path
         self.debug = debug
+        self.tokenizer = tokenizer
 
         # Metadata
         metadata_fi = os.path.join(root_dir, "AliceChapterOne-EEG.csv")
         self.metadata = metadata = pd.read_csv(metadata_fi)
+
         proc = scipy.io.loadmat(os.path.join(root_dir, f"proc/{idx}.mat"))
         self.eeg_segments = eeg_segments = proc["proc"][0][0][4]
         self.order_idx_s = order_idx_s = [seg[-1] for seg in eeg_segments]
-        if max_items > 0:
-            self.order_idx_s = self.order_idx_s[:max_items]
-        self.max_items = max_items
 
         # Labels
         segment_labels = metadata[metadata["Order"].isin(order_idx_s)]
-        self.labels = segment_labels["Word"]
+        # self.labels = segment_labels["Word"]
+
+        # Modify metadata handling to group by sentences, and do some data cleaning on the sentences
+        self.sentences = segment_labels.groupby(
+            "Sentence")["Word"].apply(lambda words: " ".join(word.replace('\x1a', 'h').upper() for word in words))
+        self.sentence_groups = segment_labels.groupby("Sentence")
+
+        # Store order indices grouped by sentence
+        self.sentence_order_idxs = []
+        for sentence_id in self.sentences.index:
+            sentence_data = self.sentence_groups.get_group(sentence_id)
+            self.sentence_order_idxs.append(list(sentence_data["Order"]))
+
+        if max_items > 0:
+            self.sentence_order_idxs = self.sentence_order_idxs[:max_items]
+            self.sentences = self.sentences[:max_items]
 
         # EEG
         eeg_path = os.path.join(root_dir, f"{idx}.vhdr")
@@ -367,8 +384,6 @@ class BrennanDataset(torch.utils.data.Dataset):
             )
             for audio_raw in self.audio_raw_s
         ]
-        # self.num_speech_features = self.audio_feat_s.shape[1]
-        # self.num_features = self.eeg_data.shape[1]
 
         # Phoneme Dictionary
         phoneme_dict = load_phoneme_dict(phoneme_dict_path)
@@ -402,19 +417,36 @@ class BrennanDataset(torch.utils.data.Dataset):
         # Target Audio Hz
         audio_hz = 16_000
 
-        # Metadata Segment
-        order_idx = self.order_idx_s[i]  # EEG
-        label = self.labels[i]  # Text Label
-        metadata_entry = self.metadata[self.metadata["Order"] == order_idx]
-        audio_segment = (
-            metadata_entry.iloc[0]["Segment"] - 1
-        )  # 0-index, not original 1-index
+        # Get all order indices for the sentence
+        sentence_order_idxs = self.sentence_order_idxs[i]
+        sentence = self.sentences.iloc[i]
 
-        # Audio Segment
+        audio_segments = set()
+        for order_idx in sentence_order_idxs:
+            metadata_entry = self.metadata[self.metadata["Order"]
+                                           == order_idx].iloc[0]
+            audio_segment = (
+                metadata_entry["Segment"] - 1
+            )  # 0-index, not original 1-index
+            audio_segments.add(audio_segment)
+
+        assert len(
+            audio_segments) == 1, "All audio_segments should be the same for a sentence"
+
+        start_order_idx = sentence_order_idxs[0]
+        end_order_idx = sentence_order_idxs[-1]
+
+        # Audio Raw Segment
+        audio_segment = list(audio_segments)[0]
         audio_len = self.audio_raw_s[audio_segment].shape[0] / audio_hz
-        audio_onset = metadata_entry.iloc[0]["onset"]
-        audio_start = max(audio_onset - 0.3, 0)
-        audio_end = min(audio_onset + 1.0, audio_len)
+        start_metadata_entry = self.metadata[self.metadata["Order"]
+                                             == start_order_idx].iloc[0]
+        end_metadata_entry = self.metadata[self.metadata["Order"]
+                                           == end_order_idx].iloc[0]
+        start_audio_onset = start_metadata_entry["onset"]
+        end_audio_onset = end_metadata_entry["onset"]
+        audio_start = max(start_audio_onset - 0.3, 0)
+        audio_end = min(end_audio_onset + 1.0, audio_len)
         audio_start_idx = int(audio_start * audio_hz)
         audio_end_idx = int(audio_end * audio_hz)
         audio_raw = self.audio_raw_s[audio_segment][audio_start_idx:audio_end_idx]
@@ -426,10 +458,16 @@ class BrennanDataset(torch.utils.data.Dataset):
 
         # EEG Segment
         powerline_freq = 60  # Assumption based on US recordings
-        cur_eeg_segment = [seg for seg in self.eeg_segments if seg[-1] == order_idx][0]
+
+        start_cur_eeg_segment = [
+            seg for seg in self.eeg_segments if seg[-1] == start_order_idx][0]
+
+        end_cur_eeg_segment = [
+            seg for seg in self.eeg_segments if seg[-1] == end_order_idx][0]
+
         brain_shift = 150  # Mental response time to stimuli
-        eeg_start_idx = int(cur_eeg_segment[0]) + brain_shift
-        eeg_end_idx = int(cur_eeg_segment[1]) + brain_shift
+        eeg_start_idx = int(start_cur_eeg_segment[0]) + brain_shift
+        eeg_end_idx = int(end_cur_eeg_segment[1]) + brain_shift
         eeg_x = self.eeg_data[:, eeg_start_idx:eeg_end_idx]
         eeg_x = notch_harmonics(eeg_x, powerline_freq, 500)
         eeg_x = remove_drift(eeg_x, 500)
@@ -441,22 +479,10 @@ class BrennanDataset(torch.utils.data.Dataset):
         # Phoneme Segment
         phonemes = self.phoneme_s[audio_segment][audio_start_win:audio_end_win]
 
-        """
-        # Phoneme Segment
-        phoneme_intervals = self.phoneme_s[audio_segment]
-        phonemes        = \
-            get_phone_idxs(
-                audio_start,
-                audio_end,
-                audio_feats,
-                phoneme_intervals,
-                self.phoneme_dict,
-                debug=self.debug)
-        """
-
         # Dict Segment
         data = {
-            "label": label,
+            "label": sentence,
+            "label_int": self.tokenizer.encode(sentence),
             "audio_feats": audio_feats,
             "audio_raw": audio_raw,
             "eeg_raw": eeg_raw,
@@ -465,21 +491,23 @@ class BrennanDataset(torch.utils.data.Dataset):
         }
 
         if self.debug:
-            print(i, label)
+            print(i, sentence)
 
         return data
 
     def __len__(self):
-        return len(self.order_idx_s)
+        return len(self.sentences)
 
-    def get_label_idxs(self, target_label):
-        labels = list(self.labels)
-        # print(labels)
-        if self.max_items:
-            labels = labels[0 : self.max_items]
+    # def get_label_idxs(self, target_label):
+    #     labels = list(self.labels)
+    #     # print(labels)
+    #     if self.max_items:
+    #         labels = labels[0: self.max_items]
 
-        if target_label in labels:
-            matches = [i for i in range(len(labels)) if target_label == labels[i]]
-            return matches
-        else:
-            ValueError(f"Attempting to get label {target_label} which does not exist.")
+    #     if target_label in labels:
+    #         matches = [i for i in range(
+    #             len(labels)) if target_label == labels[i]]
+    #         return matches
+    #     else:
+    #         ValueError(
+    #             f"Attempting to get label {target_label} which does not exist.")
