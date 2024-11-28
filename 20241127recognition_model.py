@@ -31,11 +31,11 @@ flags.DEFINE_integer('learning_rate_patience', 5, 'learning rate decay patience'
 flags.DEFINE_string('evaluate_saved', None, 'run evaluation on given model file')
 
 
-def train_model(trainset, devset, device, max_seq_len, n_epochs=200):
+def train_model(trainset, devset, device, max_seq_len, n_epochs=100):
     dataloader = torch.utils.data.DataLoader(
         dataset=trainset,
         pin_memory=(device == 'cuda'),
-        num_workers=0,
+        num_workers=4,
         collate_fn=EEGDataset.collate_raw,
         batch_size=FLAGS.batch_size,
     )
@@ -135,7 +135,7 @@ def test(model, testset, device):
             pred_int = beam_results[0, 0, :out_lens[0, 0]].tolist()
 
             pdb.set_trace()
-            
+
             pred_text = testset.text_transform.int_to_text(pred_int)
             target_text = testset.text_transform.clean_text(example['label'][0])
 
