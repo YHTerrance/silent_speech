@@ -14,6 +14,7 @@ import numpy as np
 from textgrids import TextGrid
 
 import matplotlib.pyplot as plt
+from data_utils import TextTransform
 
 # fmt: off
 phoneme_inventory = ['aa','ae','ah','ao','aw','ax','axr','ay','b','ch','d','dh','dx','eh','el','em','en','er','ey','f','g','hh','hv','ih','iy','jh','k','l','m','n','nx','ng','ow','oy','p','r','s','sh','t','th','uh','uw','v','w','y','z','zh','sil']
@@ -318,10 +319,11 @@ class BrennanDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        tokenizer,
+        text_transform,
         root_dir,
         phoneme_dir,
         idx,
+        split: str = 'train',
         max_items=0,
         phoneme_dict_path="./phoneme_dict.txt",
         debug=False,
@@ -331,7 +333,7 @@ class BrennanDataset(torch.utils.data.Dataset):
         self.phoneme_dir = phoneme_dir
         self.phoneme_dict_path = phoneme_dict_path
         self.debug = debug
-        self.tokenizer = tokenizer
+        self.text_transform = text_transform
 
         # Metadata
         metadata_fi = os.path.join(root_dir, "AliceChapterOne-EEG.csv")
@@ -347,7 +349,7 @@ class BrennanDataset(torch.utils.data.Dataset):
 
         # Modify metadata handling to group by sentences, and do some data cleaning on the sentences
         self.sentences = segment_labels.groupby(
-            "Sentence")["Word"].apply(lambda words: " ".join(word.replace('\x1a', 'h').upper() for word in words))
+            "Sentence")["Word"].apply(lambda words: " ".join(word.replace('\x1a', 'h').lower() for word in words))
         self.sentence_groups = segment_labels.groupby("Sentence")
 
         # Store order indices grouped by sentence
@@ -421,41 +423,49 @@ class BrennanDataset(torch.utils.data.Dataset):
         sentence_order_idxs = self.sentence_order_idxs[i]
         sentence = self.sentences.iloc[i]
 
-        audio_segments = set()
+        audio_segments = {}
         for order_idx in sentence_order_idxs:
             metadata_entry = self.metadata[self.metadata["Order"]
                                            == order_idx].iloc[0]
-            audio_segment = (
-                metadata_entry["Segment"] - 1
-            )  # 0-index, not original 1-index
-            audio_segments.add(audio_segment)
+            audio_segment = metadata_entry["Segment"] - 1  # 0-index, not original 1-index
+            if audio_segment not in audio_segments:
+                audio_segments[audio_segment] = []
+            audio_segments[audio_segment].append(order_idx)
 
-        assert len(
-            audio_segments) == 1, "All audio_segments should be the same for a sentence"
+        # Process each segment and concatenate
+        audio_raw_parts = []
+        audio_feats_parts = []
+        phonemes_parts = []
+        for segment, segment_order_idxs in audio_segments.items():
+            start_order_idx = segment_order_idxs[0]
+            end_order_idx = segment_order_idxs[-1]
 
-        start_order_idx = sentence_order_idxs[0]
-        end_order_idx = sentence_order_idxs[-1]
+            # Get audio boundaries for this segment
+            audio_len = self.audio_raw_s[segment].shape[0] / audio_hz
+            start_metadata_entry = self.metadata[self.metadata["Order"] == start_order_idx].iloc[0]
+            end_metadata_entry = self.metadata[self.metadata["Order"] == end_order_idx].iloc[0]
+            
+            start_audio_onset = start_metadata_entry["onset"]
+            end_audio_onset = end_metadata_entry["onset"]
+            audio_start = max(start_audio_onset - 0.3, 0)
+            audio_end = min(end_audio_onset + 1.0, audio_len)
+            
+            audio_start_idx = int(audio_start * audio_hz)
+            audio_end_idx = int(audio_end * audio_hz)
+            audio_raw_parts.append(self.audio_raw_s[segment][audio_start_idx:audio_end_idx])
 
-        # Audio Raw Segment
-        audio_segment = list(audio_segments)[0]
-        audio_len = self.audio_raw_s[audio_segment].shape[0] / audio_hz
-        start_metadata_entry = self.metadata[self.metadata["Order"]
-                                             == start_order_idx].iloc[0]
-        end_metadata_entry = self.metadata[self.metadata["Order"]
-                                           == end_order_idx].iloc[0]
-        start_audio_onset = start_metadata_entry["onset"]
-        end_audio_onset = end_metadata_entry["onset"]
-        audio_start = max(start_audio_onset - 0.3, 0)
-        audio_end = min(end_audio_onset + 1.0, audio_len)
-        audio_start_idx = int(audio_start * audio_hz)
-        audio_end_idx = int(audio_end * audio_hz)
-        audio_raw = self.audio_raw_s[audio_segment][audio_start_idx:audio_end_idx]
+            # Get corresponding audio features
+            audio_start_win = int(audio_start * 100)
+            audio_end_win = int(audio_end * 100)
+            audio_feats_parts.append(self.audio_feat_s[segment][audio_start_win:audio_end_win])
 
-        # Audio Feats Segment
-        audio_start_win = int(audio_start * 100)
-        audio_end_win = int(audio_end * 100)
-        audio_feats = self.audio_feat_s[audio_segment][audio_start_win:audio_end_win]
+            # Phoneme Segment
+            phonemes_parts.append(self.phoneme_s[segment][audio_start_win:audio_end_win])
 
+        # Concatenate all parts
+        audio_raw = np.concatenate(audio_raw_parts)
+        audio_feats = np.concatenate(audio_feats_parts)
+        phonemes = np.concatenate(phonemes_parts)
         # EEG Segment
         powerline_freq = 60  # Assumption based on US recordings
 
@@ -476,18 +486,17 @@ class BrennanDataset(torch.utils.data.Dataset):
         eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4, stft=False)
         eeg_raw = apply_to_all(subsample, eeg_x.T, 400, 500)
 
-        # Phoneme Segment
-        phonemes = self.phoneme_s[audio_segment][audio_start_win:audio_end_win]
+        label_int = np.array(self.text_transform.text_to_int(sentence))
 
         # Dict Segment
         data = {
             "label": sentence,
-            "label_int": self.tokenizer.encode(sentence),
-            "audio_feats": audio_feats,
-            "audio_raw": audio_raw,
-            "eeg_raw": eeg_raw,
-            "eeg_feats": eeg_feats,
-            "phonemes": phonemes,
+            "label_int": torch.from_numpy(label_int).pin_memory(),
+            "audio_feats": torch.from_numpy(audio_feats).pin_memory(),
+            "audio_raw": torch.from_numpy(audio_raw).pin_memory(),
+            "eeg_raw": torch.from_numpy(eeg_raw).pin_memory(),
+            "eeg_feats": torch.from_numpy(eeg_feats).pin_memory(),
+            "phonemes": torch.from_numpy(phonemes).pin_memory(),
         }
 
         if self.debug:
