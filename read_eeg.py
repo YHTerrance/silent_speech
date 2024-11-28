@@ -1,7 +1,7 @@
 import pdb
 import pandas as pd
 import numpy as np
-from lib import BrennanDataset
+from lib import BrennanDataset, BrennanSeqDataset
 import torch
 from data_utils import TextTransform
 from torch.utils.data import Subset, ConcatDataset
@@ -29,7 +29,15 @@ class EEGDataset(ConcatDataset):
         return super().__len__()
 
     @classmethod
-    def from_subjects(cls, subjects, base_dir, train_ratio=0.7, dev_ratio=0.15, test_ratio=0.15, random_state=42):
+    def from_subjects(
+        cls,
+        subjects,
+        base_dir,
+        train_ratio=0.7,
+        dev_ratio=0.15,
+        test_ratio=0.15,
+        random_state=42,
+    ):
 
         trainsets = []
         devsets = []
@@ -51,10 +59,7 @@ class EEGDataset(ConcatDataset):
 
             # First split: separate train and temp (val + test)
             train_indices, temp_indices = train_test_split(
-                indices,
-                train_size=train_ratio,
-                random_state=random_state,
-                shuffle=True
+                indices, train_size=train_ratio, random_state=random_state, shuffle=True
             )
 
             # Second split: separate val and test from temp
@@ -81,10 +86,10 @@ class EEGDataset(ConcatDataset):
             print(
                 f"  Train: {len(train_indices)} ({len(train_indices)/num_data_points:.1%})"
             )
+            print(f"  Val: {len(val_indices)} ({len(val_indices)/num_data_points:.1%})")
             print(
-                f"  Val: {len(val_indices)} ({len(val_indices)/num_data_points:.1%})")
-            print(
-                f"  Test: {len(test_indices)} ({len(test_indices)/num_data_points:.1%})")
+                f"  Test: {len(test_indices)} ({len(test_indices)/num_data_points:.1%})"
+            )
 
         for sample in dataset:
             sample_eeg = sample["eeg_raw"]
@@ -122,43 +127,46 @@ class EEGDataset(ConcatDataset):
         3. No NaN or infinite values
         """
         print("Verifying dataset...")
-        
+
         # Track dimensions of first sample for comparison
         first_sample = self[0]
         eeg_dims = first_sample["eeg_raw"].shape[1]
-        
+
         # Track max sequence length
         max_seq_len = 0
-        
+
         for i, sample in enumerate(self):
             # Check that required keys exist
             assert "eeg_raw" in sample, f"Sample {i} missing EEG data"
             assert "label_int" in sample, f"Sample {i} missing label"
-            
+
             # Check dimensions
-            assert sample["eeg_raw"].shape[1] == eeg_dims, \
-                f"Sample {i} has inconsistent EEG dimensions: {sample['eeg_raw'].shape[1]} vs {eeg_dims}"
-            
+            assert (
+                sample["eeg_raw"].shape[1] == eeg_dims
+            ), f"Sample {i} has inconsistent EEG dimensions: {sample['eeg_raw'].shape[1]} vs {eeg_dims}"
+
             # Check for invalid values
-            assert torch.isfinite(sample["eeg_raw"]).all(), \
-                f"Sample {i} contains NaN or infinite values in EEG data"
-            assert torch.isfinite(sample["label_int"]).all(), \
-                f"Sample {i} contains NaN or infinite values in labels"
-            
+            assert torch.isfinite(
+                sample["eeg_raw"]
+            ).all(), f"Sample {i} contains NaN or infinite values in EEG data"
+            assert torch.isfinite(
+                sample["label_int"]
+            ).all(), f"Sample {i} contains NaN or infinite values in labels"
+
             # Check that lengths are non-zero
-            assert sample["eeg_raw"].shape[0] > 0, f"Sample {i} has zero-length EEG data"
+            assert (
+                sample["eeg_raw"].shape[0] > 0
+            ), f"Sample {i} has zero-length EEG data"
             assert len(sample["label_int"]) > 0, f"Sample {i} has zero-length label"
-            
+
             # Update max sequence length
             max_seq_len = max(max_seq_len, sample["eeg_raw"].shape[0])
-            
+
         print(f"Dataset verification complete. {len(self)} samples checked.")
         print(f"EEG feature dimensions: {eeg_dims}")
         print(f"Longest sequence length: {max_seq_len}")
 
         return max_seq_len
-
-
 
     # def collate_fn(batch):
     #     """

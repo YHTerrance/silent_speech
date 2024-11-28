@@ -24,14 +24,14 @@ from read_eeg import create_datasets, collate_fn
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("batch_size", 32, "training batch size")
-flags.DEFINE_integer("epochs", 80, "number of training epochs")
+flags.DEFINE_integer("epochs", 5, "number of training epochs")
 flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
 flags.DEFINE_integer("learning_rate_patience", 5, "learning rate decay patience")
 flags.DEFINE_integer("learning_rate_warmup", 500, "steps of linear warmup")
 flags.DEFINE_string("start_training_from", None, "start training from this model")
 flags.DEFINE_float("data_size_fraction", 0.01, "fraction of training data to use")
 flags.DEFINE_float(
-    "phoneme_loss_weight", 100, "weight of auxiliary phoneme prediction loss"
+    "phoneme_loss_weight", 0, "weight of auxiliary phoneme prediction loss"
 )
 flags.DEFINE_float("l2", 1e-7, "weight decay")
 flags.DEFINE_string("output_directory", "output", "output directory")
@@ -61,17 +61,9 @@ def test(model, testset, device):
 
             X_raw = batch["eeg_raw"].float().to(device)
             pred, phoneme_pred = model(X_raw)
-            import pdb
-
-            pdb.set_trace()
             loss, phon_acc = dtw_loss(
                 pred, phoneme_pred, batch, True, phoneme_confusion
             )
-            if id == 0:
-                for pred_phone in phoneme_pred:
-                    pred_phone = pred_phone.argmax(-1)
-                    print(pred_phone)
-                    break
             losses.append(loss.item())
 
             accuracies.append(phon_acc)
@@ -144,12 +136,14 @@ def dtw_loss(
                 print(p.size())
 
         assert y.size(0) == pred.size(0), f"{y.size()} != {pred.size()}"
-
         dists = F.pairwise_distance(y, pred)  # audio_feats v.s. model output
 
-        assert len(pred_phone.size()) == 2 and len(y_phone.size()) == 1
-        phoneme_loss = F.cross_entropy(pred_phone, y_phone, reduction="sum")
-        loss = dists.sum() + FLAGS.phoneme_loss_weight * phoneme_loss
+        if not pred_phone is None:
+            assert len(pred_phone.size()) == 2 and len(y_phone.size()) == 1
+            phoneme_loss = F.cross_entropy(pred_phone, y_phone, reduction="sum")
+            loss = dists.sum() + FLAGS.phoneme_loss_weight * phoneme_loss
+        else:
+            loss = dists.sum()
 
         if phoneme_eval:
             pred_phone = pred_phone.argmax(-1)
@@ -191,6 +185,7 @@ def train_model(
     n_phones = len(phoneme_inventory)
 
     model = Model(num_features, num_speech_features, n_phones).to(device)
+    # model = Model(num_features, num_speech_features, None).to(device)
 
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(FLAGS.start_training_from)
