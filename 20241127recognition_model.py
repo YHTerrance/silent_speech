@@ -35,7 +35,7 @@ def train_model(trainset, devset, device, max_seq_len, n_epochs=100):
     dataloader = torch.utils.data.DataLoader(
         dataset=trainset,
         pin_memory=(device == 'cuda'),
-        num_workers=4,
+        num_workers=0,
         collate_fn=EEGDataset.collate_raw,
         batch_size=FLAGS.batch_size,
     )
