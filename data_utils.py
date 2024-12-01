@@ -6,16 +6,16 @@ import soundfile as sf
 from textgrids import TextGrid
 import jiwer
 from unidecode import unidecode
-
+from typing import List, Optional, Literal
 import torch
 import matplotlib.pyplot as plt
 
 from absl import flags
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string(
-    "normalizers_file", "normalizers.pkl", "file with pickled feature normalizers"
-)
+# flags.DEFINE_string(
+#     "normalizers_file", "normalizers.pkl", "file with pickled feature normalizers"
+# )
 
 phoneme_inventory = [
     "aa",
@@ -271,7 +271,15 @@ def combine_fixed_length(tensor_list, length):
         total_length += pad_length
     tensor = torch.cat(tensor_list, 0)
     n = total_length // length
-    return tensor.view(n, length, *tensor.size()[1:])
+    # original_lengths = [t.size(0) for t in tensor_list]
+    # chunk_mapping = []
+    # current_idx = 0
+    # for i, orig_len in enumerate(original_lengths):
+    #     while orig_len > 0:
+    #         chunk_mapping.append(i)
+    #         orig_len -= length
+    #         current_idx += 1
+    return tensor.view(n, length, *tensor.size()[1:])  # , chunk_mapping
 
 
 def decollate_tensor(tensor, lengths):
@@ -363,12 +371,15 @@ def read_phonemes(textgrid_fname, max_len=None):
     return phone_ids
 
 
-class TextTransform(object):
+class TextTransformOrig(object):
     def __init__(self):
         self.transformation = jiwer.Compose(
             [jiwer.RemovePunctuation(), jiwer.ToLowerCase()]
         )
         self.chars = string.ascii_lowercase + string.digits + " "
+        self.chars = {c: i for i, c in enumerate(self.chars)}
+        self.inv_vocab = {v: k for k, v in self.chars.items()}
+        self.pad_token = " "
 
     def clean_text(self, text):
         text = unidecode(text)
@@ -377,7 +388,89 @@ class TextTransform(object):
 
     def text_to_int(self, text):
         text = self.clean_text(text)
-        return [self.chars.index(c) for c in text]
+        return [self.chars.get(c) for c in text]
 
     def int_to_text(self, ints):
-        return "".join(self.chars[i] for i in ints)
+        return "".join(self.inv_vocab.get(i) for i in ints)
+
+
+class TextTransform:
+    """A wrapper around character tokenization to have a consistent interface with other tokeization strategies"""
+
+    def __init__(self):
+        self.transformation = jiwer.Compose(
+            [
+                jiwer.RemoveKaldiNonWords(),
+                jiwer.ToLowerCase(),
+            ]  # jiwer.RemovePunctuation(),
+        )
+        self.pad_token = "-"
+
+        characters = list(string.ascii_lowercase + string.digits + "' ")
+
+        self.chars = {
+            self.pad_token: 0,
+        }
+
+        for idx, char in enumerate(characters, start=1):
+            self.chars[char] = idx
+
+        self.inv_vocab = {v: k for k, v in self.chars.items()}
+
+        self.pad_token_id = self.chars[self.pad_token]
+
+        self.chars_size = len(self.chars)
+
+    def clean_text(self, text):
+        text = unidecode(text)
+        text = self.transformation(text)
+        return text
+
+    def tokenize(self, data: str) -> List[str]:
+        return [char for char in data]
+
+    def text_to_int(
+        self, data: str, return_tensors: Optional[Literal["pt"]] = None
+    ) -> List[int]:
+        e = [
+            self.chars.get(char.lower(), self.chars_size - 1) for char in data
+        ]  # replace unknown characters with space
+        if return_tensors == "pt":
+            return torch.tensor(e).unsqueeze(0)
+        return e
+
+    def int_to_text(self, data: List[int]) -> str:
+        try:
+            return "".join([self.inv_vocab.get(j, " ") for j in data])
+        except:
+            data = data.cpu().tolist()
+            return "".join([self.inv_vocab.get(j, " ") for j in data])
+
+
+def save_model(model, optimizer, scheduler, metric, epoch, path):
+    if not (
+        (isinstance(metric, tuple) or isinstance(metric, list)) and len(metric) == 2
+    ):
+        raise ValueError("metric must be a tuple in the form (name, value)")
+
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler else {},
+            metric[0]: metric[1],  # Unpacks the metric name and value
+            "epoch": epoch,
+        },
+        path,
+    )
+
+
+# def decode_prediction(output, output_lens, decoder, PHONEME_MAP=LABELS):
+#     beam_results, _, _, out_lens = decoder.decode(output)
+#     pred_strings = []
+
+#     for i in range(output_lens.shape[0]):
+#         # Get the best hypothesis for the current sequence (beam_results[i][0] gives the top prediction)
+#         prediction = beam_results[i][0][: out_lens[i][0]]
+#         pred_strings.append("".join([PHONEME_MAP[p] for p in prediction if p != 0]))
+#     return pred_strings

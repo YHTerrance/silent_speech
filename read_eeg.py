@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from lib import BrennanDataset, BrennanSeqDataset
 import torch
-from data_utils import TextTransform
+from data_utils import TextTransform, TextTransformOrig
 from torch.utils.data import Subset, ConcatDataset
 from pathlib import Path
 from sklearn.model_selection import train_test_split
@@ -12,7 +12,18 @@ base_dir = Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
 # phoneme_dir = "/ocean/projects/cis240129p/shared/data/eeg_alice/phonemes"
 # phoneme_dict_path = "/ocean/projects/cis240129p/shared/data/eeg_alice/phoneme_dict.txt"
 subjects_used = [
-    "S04"
+    "S01",
+    "S03",
+    "S04",
+    "S13",
+    "S18",
+    "S19",
+    "S37",
+    "S38",
+    "S41",
+    "S42",
+    "S44",
+    "S48",
 ]  # exclude 'S05' - less channels / other good channels: "S13", "S19"
 
 
@@ -43,7 +54,7 @@ class EEGDataset(ConcatDataset):
         devsets = []
         testsets = []
 
-        text_transform = TextTransform()
+        text_transform = TextTransformOrig()
 
         for subject in subjects:
 
@@ -109,9 +120,11 @@ class EEGDataset(ConcatDataset):
         lengths = [ex["eeg_raw"].shape[0] for ex in batch]
         text_ints = [ex["label_int"] for ex in batch]
         text_lengths = [ex["label_int"].shape[0] for ex in batch]
+        labels = [ex["label"] for ex in batch]
 
         result = {
             "eeg_raw": eeg_raw,
+            "labels": labels,
             # "eeg_generated": eeg_generated,
             "lengths": lengths,
             "text_int": text_ints,
@@ -197,27 +210,29 @@ class EEGDataset(ConcatDataset):
     #     return batch_dict
 
 
-# if __name__ == "__main__":
-#     train_dataset, val_dataset, test_dataset = create_datasets(
-#         subjects_used, base_dir)
-#     print(
-#         f"Train dataset length: {len(train_dataset)}, Test dataset length: {len(test_dataset)}"
-#     )
+if __name__ == "__main__":
+    train_dataset, val_dataset, test_dataset = EEGDataset.from_subjects(
+        subjects=["S04"],
+        base_dir=base_dir,
+    )
+    print(
+        f"Train dataset length: {len(train_dataset)}, Test dataset length: {len(test_dataset)}"
+    )
 
-#     print(train_dataset[0])
+    print(train_dataset[0])
 
-#     train_dataloder = torch.utils.data.DataLoader(
-#         train_dataset,
-#         batch_size=2,
-#         num_workers=1,
-#         shuffle=True,
-#         collate_fn=collate_fn,
-#     )
+    train_dataloder = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=2,
+        num_workers=0,
+        shuffle=True,
+        collate_fn=EEGDataset.collate_raw,
+    )
 
-#     test_dataloder = torch.utils.data.DataLoader(
-#         test_dataset,
-#         batch_size=2,
-#         num_workers=1,
-#         shuffle=False,
-#         collate_fn=collate_fn,
-#     )
+    test_dataloder = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=2,
+        num_workers=0,
+        shuffle=False,
+        collate_fn=EEGDataset.collate_raw,
+    )

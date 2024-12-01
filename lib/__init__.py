@@ -348,7 +348,7 @@ class BrennanDataset(torch.utils.data.Dataset):
 
         # Modify metadata handling to group by sentences, and do some data cleaning on the sentences
         self.sentences = segment_labels.groupby("Sentence")["Word"].apply(
-            lambda words: " ".join(word.replace("\x1a", "h").upper() for word in words)
+            lambda words: " ".join(word.replace("\x1a", "'").upper() for word in words)
         )
         self.sentence_groups = segment_labels.groupby("Sentence")
 

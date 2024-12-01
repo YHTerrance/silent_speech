@@ -10,7 +10,7 @@ from absl import flags
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("model_size", 768, "number of hidden dimensions")
 flags.DEFINE_integer("num_layers", 6, "number of layers")
-flags.DEFINE_float("dropout", 0.2, "dropout")
+flags.DEFINE_float("dropout", 0.4, "dropout")
 
 
 class ResBlock(nn.Module):
@@ -61,8 +61,7 @@ class EEGModel(nn.Module):
             dim_feedforward=3072,
             dropout=FLAGS.dropout,
         )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer, FLAGS.num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
         self.w_out = nn.Linear(FLAGS.model_size, num_outs)
 
     def forward(self, x_raw):
