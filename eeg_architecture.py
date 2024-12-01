@@ -68,9 +68,9 @@ class EEGModel(nn.Module):
         # x shape is (batch, time, electrode)
 
         # TODO: figure out wtf this is
-        x_raw = x_raw.transpose(1, 2)  # put channel before time for conv
+        x_raw = x_raw.transpose(1, 2)  # put channel before time for conv B x C x T
         x_raw = self.conv_blocks(x_raw)
-        x_raw = x_raw.transpose(1, 2)  # transpose back
+        x_raw = x_raw.transpose(1, 2)  # transpose back to B x T x C
         x_raw = self.w_raw_in(x_raw)
 
         x = x_raw

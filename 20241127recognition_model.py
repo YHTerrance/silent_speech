@@ -41,7 +41,7 @@ def train_model(trainset, devset, device, max_seq_len):
         dataset=trainset,
         pin_memory=(device == "cuda"),
         num_workers=0,
-        collate_fn=EEGDataset.collate_raw,
+        collate_fn=trainset.collate_raw,
         batch_size=FLAGS.batch_size,
     )
     chars = list(trainset.text_transform.chars.keys()) + ["_"]
@@ -247,11 +247,11 @@ def main():
         "S18",
         "S19",
         "S37",
-        # "S38",
+        # "S38", missing one channel
         "S41",
         "S42",
         "S44",
-        "S48",  # missing one channel
+        "S48",
     ]
     # subjects = ["S04", "S13"]
 

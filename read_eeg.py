@@ -7,6 +7,7 @@ from data_utils import TextTransform, TextTransformOrig
 from torch.utils.data import Subset, ConcatDataset
 from pathlib import Path
 from sklearn.model_selection import train_test_split
+import torchaudio.transforms as T
 
 base_dir = Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
 # phoneme_dir = "/ocean/projects/cis240129p/shared/data/eeg_alice/phonemes"
@@ -19,7 +20,7 @@ subjects_used = [
     "S18",
     "S19",
     "S37",
-    "S38",
+    # "S38",
     "S41",
     "S42",
     "S44",
@@ -28,10 +29,27 @@ subjects_used = [
 
 
 class EEGDataset(ConcatDataset):
-    def __init__(self, datasets, text_transform, num_features):
+    def __init__(
+        self,
+        datasets,
+        text_transform,
+        num_features,
+        time_mask_param=20,
+        freq_mask_param=10,
+    ):
         super().__init__(datasets)
         self.text_transform = text_transform
         self.num_features = num_features
+        self.time_masking = None
+        self.freq_masking = None
+        if time_mask_param:
+            self.time_masking = T.TimeMasking(
+                time_mask_param=time_mask_param,
+                iid_masks=True,
+                p=0.5,
+            )
+        if freq_mask_param:
+            self.freq_masking = T.FrequencyMasking(freq_mask_param=freq_mask_param)
 
     def __getitem__(self, index):
         return super().__getitem__(index)
@@ -108,19 +126,47 @@ class EEGDataset(ConcatDataset):
 
         # Concatenate all datasets
         return (
-            cls(trainsets, text_transform, num_features=sample_eeg.shape[1]),
-            cls(devsets, text_transform, num_features=sample_eeg.shape[1]),
-            cls(testsets, text_transform, num_features=sample_eeg.shape[1]),
+            cls(
+                trainsets,
+                text_transform,
+                num_features=sample_eeg.shape[1],
+                time_mask_param=50,
+                freq_mask_param=10,
+            ),
+            cls(
+                devsets,
+                text_transform,
+                num_features=sample_eeg.shape[1],
+                time_mask_param=0,
+                freq_mask_param=0,
+            ),
+            cls(
+                testsets,
+                text_transform,
+                num_features=sample_eeg.shape[1],
+                time_mask_param=0,
+                freq_mask_param=0,
+            ),
         )
 
-    @staticmethod
-    def collate_raw(batch):
+    # @staticmethod
+    def collate_raw(self, batch):
         batch_size = len(batch)
-        eeg_raw = [ex["eeg_raw"] for ex in batch]
+        eeg_raw = [ex["eeg_raw"] for ex in batch]  # B x T x C
         lengths = [ex["eeg_raw"].shape[0] for ex in batch]
         text_ints = [ex["label_int"] for ex in batch]
         text_lengths = [ex["label_int"].shape[0] for ex in batch]
         labels = [ex["label"] for ex in batch]
+        if self.time_masking or self.freq_masking:
+            for i in range(batch_size):
+                eeg_raw[i] = eeg_raw[i].unsqueeze(0)
+                eeg_raw[i] = eeg_raw[i].transpose(1, 2)
+                if self.time_masking:
+                    eeg_raw[i] = self.time_masking(eeg_raw[i])
+                if self.freq_masking:
+                    eeg_raw[i] = self.freq_masking(eeg_raw[i])
+                eeg_raw[i] = eeg_raw[i].transpose(1, 2)
+                eeg_raw[i] = eeg_raw[i].squeeze(0)
 
         result = {
             "eeg_raw": eeg_raw,
@@ -180,34 +226,6 @@ class EEGDataset(ConcatDataset):
         print(f"Longest sequence length: {max_seq_len}")
 
         return max_seq_len
-
-    # def collate_fn(batch):
-    #     """
-    #     A custom collate function that handles different types of data in a batch.
-    #     It dynamically creates batches by converting arrays or lists to tensors and
-    #     applies padding to variable-length sequences.
-    #     """
-    #     batch_dict = {}
-    #     for key in batch[0].keys():
-    #         batch_items = [item[key] for item in batch]
-    #         if isinstance(batch_items[0], np.ndarray) or isinstance(
-    #             batch_items[0], torch.Tensor
-    #         ):
-    #             if isinstance(batch_items[0], np.ndarray):
-    #                 batch_items = [torch.tensor(b) for b in batch_items]
-    #             if len(batch_items[0].shape) > 0:
-    #                 batch_dict[key] = torch.nn.utils.rnn.pad_sequence(
-    #                     batch_items, batch_first=True  # pad with zeros
-    #                 )
-    #             else:
-    #                 batch_dict[key] = torch.stack(batch_items)
-    #         else:
-    #             batch_dict[key] = batch_items
-
-    #     lengths = [a.shape[0] for a in batch_dict["eeg_raw"]]
-    #     batch_dict["lengths"] = torch.tensor(lengths)
-
-    #     return batch_dict
 
 
 if __name__ == "__main__":
