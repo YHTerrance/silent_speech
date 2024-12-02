@@ -8,13 +8,14 @@ import jiwer
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from data_utils import decollate_tensor, combine_fixed_length
+from data_utils import decollate_tensor, combine_fixed_length, save_model
 from ctcdecode import CTCBeamDecoder
 from read_emg import EMGDataset
 from read_eeg import EEGDataset
 from eeg_architecture import EEGModel
 import gc
 import json
+import wandb
 
 from pathlib import Path
 from absl import flags
@@ -31,6 +32,7 @@ flags.DEFINE_float("learning_rate", 3e-4, "learning rate")
 flags.DEFINE_integer("learning_rate_warmup", 1000, "steps of linear warmup")
 flags.DEFINE_integer("learning_rate_patience", 5, "learning rate decay patience")
 flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
+flags.DEFINE_string("wandb_name", "word_cls", "wandb run name")
 
 
 def train_model(trainset, devset, device, max_seq_len):
@@ -57,6 +59,20 @@ def train_model(trainset, devset, device, max_seq_len):
     )
 
     model = EEGModel(devset.num_features, n_chars + 1).to(device)
+    wandb.login(key="1b4a08dec829dd8f2d99985b647c44f28c0e2b23", relogin=True)
+    run = wandb.init(
+        name=FLAGS.wandb_name,
+        reinit=True,
+        project="eeg-alice",
+    )
+    expt_root = run.dir
+    os.makedirs(expt_root, exist_ok=True)
+    model_arch = str(model)
+    model_path = os.path.join(expt_root, "model_arch.txt")
+    arch_file = open(model_path, "w")
+    file_write = arch_file.write(model_arch)
+    arch_file.close()
+    wandb.watch(model, log="all")
 
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(
@@ -153,7 +169,22 @@ def train_model(trainset, devset, device, max_seq_len):
         logging.info(
             f"finished epoch {epoch_idx+1} - training loss: {train_loss:.4f} training WER:{train_wer*100:.2f} validation WER: {val*100:.2f} lr: {curr_lr}"
         )
-        torch.save(model.state_dict(), os.path.join(FLAGS.output_directory, "model.pt"))
+        wandb.log(
+            {
+                "train_loss": train_loss,
+                "train_wer": train_wer,
+                "val_wer": val,
+                "lr": curr_lr,
+            }
+        )
+        save_model(
+            model,
+            optimizer=optim,
+            scheduler=lr_sched,
+            metric=("WER", val),
+            epoch=epoch_idx,
+            path=os.path.join(FLAGS.output_directory, "model.pt"),
+        )
         if epoch_idx % 5 == 0:
             output_json_dir = os.path.join(FLAGS.output_directory, "text")
             os.makedirs(output_json_dir, exist_ok=True)
