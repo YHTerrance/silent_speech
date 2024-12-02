@@ -11,6 +11,8 @@ import torch
 import matplotlib.pyplot as plt
 
 from absl import flags
+from pathlib import Path
+import pandas as pd
 
 FLAGS = flags.FLAGS
 # flags.DEFINE_string(
@@ -369,6 +371,24 @@ def read_phonemes(textgrid_fname, max_len=None):
         phone_ids = phone_ids[:max_len]
         assert phone_ids.shape[0] == max_len
     return phone_ids
+
+
+class WordTransform:
+    def __init__(
+        self, root_dir=Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
+    ):
+        metadata_fi = Path(root_dir) / "AliceChapterOne-EEG.csv"
+        self.metadata = pd.read_csv(metadata_fi)
+        unique_words = self.metadata["Word"].str.lower().unique()
+        self.vocabs = {word: i for i, word in enumerate(unique_words)}
+        self.inv_vocabs = {i: word for i, word in enumerate(unique_words)}
+        self.vocabs_size = len(self.vocabs)
+
+    def text_to_int(self, text: str) -> int:
+        return self.vocabs[text.lower()]
+
+    def int_to_text(self, i) -> str:
+        return self.inv_vocabs[i]
 
 
 class TextTransformOrig(object):
