@@ -55,7 +55,7 @@ def train_model(trainset, devset, device, max_seq_len):
         model_path="lm.binary",
         alpha=1.5,
         beta=1.85,
-        beam_width=20,
+        beam_width=30,
     )
 
     model = EEGModel(devset.num_features, n_chars + 1).to(device)
@@ -293,6 +293,9 @@ def main():
         subjects=subjects,
         # generated_subjects=generated_subjects,
         base_dir=base_dir,
+        train_ratio=0.8,
+        dev_ratio=0.1,
+        test_ratio=0.1,
     )
 
     train_max_seq_len = trainset.verify_dataset()
@@ -311,6 +314,8 @@ def main():
     print("device:", device)
 
     model = train_model(trainset, devset, device, max_seq_len)
+    test_wer = test(model, testset, device)
+    logging.info("Test WER: %f", test_wer)
 
 
 if __name__ == "__main__":
