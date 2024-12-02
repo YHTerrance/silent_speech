@@ -1,9 +1,9 @@
 import pdb
 import pandas as pd
 import numpy as np
-from lib import BrennanDataset, BrennanSeqDataset
+from lib import BrennanDataset
 import torch
-from data_utils import TextTransform, TextTransformOrig
+from data_utils import TextTransform, TextTransformOrig, WordTransform
 from torch.utils.data import Subset, ConcatDataset
 from pathlib import Path
 from sklearn.model_selection import train_test_split
@@ -66,13 +66,15 @@ class EEGDataset(ConcatDataset):
         dev_ratio=0.15,
         test_ratio=0.15,
         random_state=42,
+        time_mask_param=0,
+        frea_mask_param=0,
     ):
 
         trainsets = []
         devsets = []
         testsets = []
 
-        text_transform = TextTransformOrig()
+        text_transform = WordTransform()
 
         for subject in subjects:
 
@@ -130,8 +132,8 @@ class EEGDataset(ConcatDataset):
                 trainsets,
                 text_transform,
                 num_features=sample_eeg.shape[1],
-                time_mask_param=50,
-                freq_mask_param=10,
+                time_mask_param=time_mask_param,
+                freq_mask_param=frea_mask_param,
             ),
             cls(
                 devsets,
@@ -155,7 +157,7 @@ class EEGDataset(ConcatDataset):
         eeg_raw = [ex["eeg_raw"] for ex in batch]  # B x T x C
         lengths = [ex["eeg_raw"].shape[0] for ex in batch]
         text_ints = [ex["label_int"] for ex in batch]
-        text_lengths = [ex["label_int"].shape[0] for ex in batch]
+        # text_lengths = [ex["label_int"].shape[0] for ex in batch]
         labels = [ex["label"] for ex in batch]
         if self.time_masking or self.freq_masking:
             for i in range(batch_size):
@@ -174,7 +176,6 @@ class EEGDataset(ConcatDataset):
             # "eeg_generated": eeg_generated,
             "lengths": lengths,
             "text_int": text_ints,
-            "text_int_lengths": text_lengths,
         }
         return result
 
@@ -208,20 +209,23 @@ class EEGDataset(ConcatDataset):
             assert torch.isfinite(
                 sample["eeg_raw"]
             ).all(), f"Sample {i} contains NaN or infinite values in EEG data"
-            assert torch.isfinite(
-                sample["label_int"]
-            ).all(), f"Sample {i} contains NaN or infinite values in labels"
+            # Check label_int is an integer
+            assert isinstance(
+                sample["label_int"], int
+            ), f"Sample {i} contains non-integer label"
 
             # Check that lengths are non-zero
             assert (
                 sample["eeg_raw"].shape[0] > 0
             ), f"Sample {i} has zero-length EEG data"
-            assert len(sample["label_int"]) > 0, f"Sample {i} has zero-length label"
+            assert (
+                0 <= sample["label_int"] < self.text_transform.vocabs_size
+            ), f"Invalid label {i}"
 
             # Update max sequence length
             max_seq_len = max(max_seq_len, sample["eeg_raw"].shape[0])
 
-        print(f"Dataset verification complete. {len(self)} samples checked.")
+        print(f"Dataset verification complete. {len(self), i} samples checked.")
         print(f"EEG feature dimensions: {eeg_dims}")
         print(f"Longest sequence length: {max_seq_len}")
 
@@ -244,7 +248,7 @@ if __name__ == "__main__":
         batch_size=2,
         num_workers=0,
         shuffle=True,
-        collate_fn=EEGDataset.collate_raw,
+        collate_fn=train_dataset.collate_raw,
     )
 
     test_dataloder = torch.utils.data.DataLoader(
@@ -252,5 +256,5 @@ if __name__ == "__main__":
         batch_size=2,
         num_workers=0,
         shuffle=False,
-        collate_fn=EEGDataset.collate_raw,
+        collate_fn=train_dataset.collate_raw,
     )

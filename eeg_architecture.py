@@ -62,6 +62,8 @@ class EEGModel(nn.Module):
             dropout=FLAGS.dropout,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        self.flatten = nn.Flatten()
         self.w_out = nn.Linear(FLAGS.model_size, num_outs)
 
     def forward(self, x_raw):
@@ -79,5 +81,8 @@ class EEGModel(nn.Module):
         x = x.transpose(0, 1)
         x = self.transformer(x)
         x = x.transpose(0, 1)
-
+        x = x.transpose(1, 2)  # B x C x T
+        x = self.avgpool(x)  # B x C x 1
+        x = x.transpose(1, 2)  # B x 1 x C
+        x = self.flatten(x)  # (B, 1, C) -> (B, C)
         return self.w_out(x)
