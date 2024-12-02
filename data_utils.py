@@ -485,6 +485,14 @@ def save_model(model, optimizer, scheduler, metric, epoch, path):
     )
 
 
+def load_model(model, optimizer, scheduler, path):
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    return model, optimizer, scheduler, checkpoint["epoch"]
+
+
 # def decode_prediction(output, output_lens, decoder, PHONEME_MAP=LABELS):
 #     beam_results, _, _, out_lens = decoder.decode(output)
 #     pred_strings = []

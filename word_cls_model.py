@@ -53,6 +53,8 @@ def train_model(trainset, devset, device, max_seq_len):
     arch_file = open(model_path, "w")
     file_write = arch_file.write(model_arch)
     arch_file.close()
+    # save model_arch to wandb
+    wandb.save(model_path)
     wandb.watch(model, log="all")
     if FLAGS.start_training_from is not None:
         state_dict = torch.load(
@@ -79,9 +81,9 @@ def train_model(trainset, devset, device, max_seq_len):
         model.train()
         curr_lr = float(optim.param_groups[0]["lr"])
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
-            X = torch.stack(example["eeg_raw"]).float().to(device)  # B x T x C
+            X = torch.stack(example["eeg_raw"]).float().to(device)  # [B x T x C]
             pred = model(X)
-            y = torch.tensor(example["text_int"]).to(device)
+            y = torch.tensor(example["text_int"]).to(device)  # [B]
             loss = criterion(pred, y)
             optim.zero_grad()
             loss.backward()
@@ -190,18 +192,29 @@ def main():
 
     subjects = [
         "S01",
-        # "S03",
-        # "S04",
-        # "S13",
-        # "S18",
-        # "S19",
-        # "S37",
-        # # "S38", missing one channel
-        # "S41",
-        # "S42",
-        # "S44",
-        # "S48",
+        "S03",
+        "S04",
+        # "S05", missing one channel
+        "S08",
+        "S11",
+        "S12",
+        "S13",
+        "S16",
+        "S17",
+        "S18",
+        "S19",
+        "S22",
+        "S26",
+        "S36",
+        "S37",
+        # "S38", missing one channel
+        "S40",
+        "S41",
+        "S42",
+        "S44",
+        "S48",
     ]
+    logging.info(f"subjects: {subjects}")
     # subjects = ["S04", "S13"]
 
     # Train on 2x, 3x, 4x... increase subjects in this list
