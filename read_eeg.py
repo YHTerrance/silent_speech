@@ -8,6 +8,7 @@ from torch.utils.data import Subset, ConcatDataset
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 import torchaudio.transforms as T
+from collections import defaultdict
 
 base_dir = Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
 # phoneme_dir = "/ocean/projects/cis240129p/shared/data/eeg_alice/phonemes"
@@ -68,13 +69,12 @@ class EEGDataset(ConcatDataset):
         random_state=42,
     ):
 
-        trainsets = []
-        devsets = []
-        testsets = []
-
+        all_data = []  # (subject_id, idx, sample)
+        sentence_to_indices = defaultdict(list)
         text_transform = TextTransformOrig()
+        preload_dataset = {}
 
-        for subject in subjects:
+        for subject_id, subject in enumerate(subjects):
 
             dataset = BrennanDataset(
                 text_transform=text_transform,
@@ -83,43 +83,48 @@ class EEGDataset(ConcatDataset):
                 idx=subject,
                 phoneme_dict_path=base_dir / "phoneme_dict.txt",
             )
-            num_data_points = len(dataset)
-            indices = np.arange(num_data_points)
+            preload_dataset[subject_id] = dataset
+            for idx, sample in enumerate(dataset):
+                sentence = sample["label"]
+                all_data.append((subject_id, idx, sample))
+                sentence_to_indices[sentence].append(len(all_data) - 1)
 
-            # First split: separate train and temp (val + test)
-            train_indices, temp_indices = train_test_split(
-                indices, train_size=train_ratio, random_state=random_state, shuffle=True
+        train_indices, dev_indices, test_indices = (
+            defaultdict(list),
+            defaultdict(list),
+            defaultdict(list),
+        )
+        for sentence, indices in sentence_to_indices.items():
+            # stratify by sentences
+            if len(indices) < 10:
+                continue
+            train_idx, test_idx = train_test_split(
+                indices, test_size=0.2, random_state=1
+            )
+            dev_idx, test_idx = train_test_split(
+                test_idx, test_size=0.5, random_state=1
+            )
+            for idx in train_idx:
+                subject_id, _, _ = all_data[idx]
+                train_indices[subject_id].append(idx)
+            for idx in dev_idx:
+                subject_id, _, _ = all_data[idx]
+                dev_indices[subject_id].append(idx)
+            for idx in test_idx:
+                subject_id, _, _ = all_data[idx]
+                test_indices[subject_id].append(idx)
+        trainsets, devsets, testsets = [], [], []
+        for subject_id, subject in enumerate(subjects):
+            trainsets.append(
+                Subset(preload_dataset[subject_id], train_indices[subject_id])
+            )
+            devsets.append(Subset(preload_dataset[subject_id], dev_indices[subject_id]))
+            testsets.append(
+                Subset(preload_dataset[subject_id], test_indices[subject_id])
             )
 
-            # Second split: separate val and test from temp
-            relative_dev_ratio = dev_ratio / (dev_ratio + test_ratio)
-            val_indices, test_indices = train_test_split(
-                temp_indices,
-                train_size=relative_dev_ratio,
-                random_state=random_state,
-                shuffle=True,
-            )
-
-            # Create Subset datasets using indices
-            train_dataset = Subset(dataset, train_indices)
-            val_dataset = Subset(dataset, val_indices)
-            test_dataset = Subset(dataset, test_indices)
-
-            # Append to respective lists
-            trainsets.append(train_dataset)
-            devsets.append(val_dataset)
-            testsets.append(test_dataset)
-
-            # Print split sizes for verification
-            print(f"Subject {subject} splits:")
-            print(
-                f"  Train: {len(train_indices)} ({len(train_indices)/num_data_points:.1%})"
-            )
-            print(f"  Val: {len(val_indices)} ({len(val_indices)/num_data_points:.1%})")
-            print(
-                f"  Test: {len(test_indices)} ({len(test_indices)/num_data_points:.1%})"
-            )
-
+        # Get EEG feature size from the first sample
+        sample_eeg = all_data[0][2]["eeg_raw"]
         for sample in dataset:
             sample_eeg = sample["eeg_raw"]
             break

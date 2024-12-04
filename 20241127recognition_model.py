@@ -193,6 +193,8 @@ def train_model(trainset, devset, device, max_seq_len):
             )
             with open(output_json_path, "w") as f:
                 json.dump(results, f, indent=4)
+    run.finish()
+    return model
 
 
 def test(model, testset, device, epoch_idx=0):
