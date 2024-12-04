@@ -63,19 +63,16 @@ class EEGDataset(ConcatDataset):
         cls,
         subjects,
         base_dir,
-        train_ratio=0.7,
-        dev_ratio=0.15,
-        test_ratio=0.15,
-        random_state=42,
+        train_ratio=0.8,
+        dev_ratio=0.1,
+        test_ratio=0.1,
+        time_mask_param=50,
+        freq_mask_param=10,
     ):
-
-        all_data = []  # (subject_id, idx, sample)
-        sentence_to_indices = defaultdict(list)
         text_transform = TextTransformOrig()
         preload_dataset = {}
-
-        for subject_id, subject in enumerate(subjects):
-
+        sen2sub = defaultdict(list)  # sentence_id: [subs]
+        for subIdx, subject in enumerate(subjects):
             dataset = BrennanDataset(
                 text_transform=text_transform,
                 root_dir=base_dir,
@@ -83,51 +80,40 @@ class EEGDataset(ConcatDataset):
                 idx=subject,
                 phoneme_dict_path=base_dir / "phoneme_dict.txt",
             )
-            preload_dataset[subject_id] = dataset
-            for idx, sample in enumerate(dataset):
-                sentence = sample["label"]
-                all_data.append((subject_id, idx, sample))
-                sentence_to_indices[sentence].append(len(all_data) - 1)
+            preload_dataset[subIdx] = dataset
+            for sentId, _ in enumerate(dataset):
+                sen2sub[sentId].append(subIdx)
 
-        train_indices, dev_indices, test_indices = (
-            defaultdict(list),
-            defaultdict(list),
-            defaultdict(list),
-        )
-        for sentence, indices in sentence_to_indices.items():
+        subs2sen_train = defaultdict(list)  # sub: [sentences]
+        subs2sen_dev = defaultdict(list)  # sub: [sentences]
+        subs2sen_test = defaultdict(list)  # sub: [sentences]
+        for sentId, subIdx in sen2sub.items():
             # stratify by sentences
-            if len(indices) < 10:
+            if len(subIdx) < 10:
                 continue
-            train_idx, test_idx = train_test_split(
-                indices, test_size=0.2, random_state=1
-            )
+            # Subject IDs
+            train_idx, test_idx = train_test_split(subIdx, train_size=train_ratio)
             dev_idx, test_idx = train_test_split(
-                test_idx, test_size=0.5, random_state=1
+                test_idx, train_size=dev_ratio / (dev_ratio + test_ratio)
             )
-            for idx in train_idx:
-                subject_id, _, _ = all_data[idx]
-                train_indices[subject_id].append(idx)
-            for idx in dev_idx:
-                subject_id, _, _ = all_data[idx]
-                dev_indices[subject_id].append(idx)
-            for idx in test_idx:
-                subject_id, _, _ = all_data[idx]
-                test_indices[subject_id].append(idx)
+            for sub in train_idx:
+                subs2sen_train[sub].append(sentId)
+            for sub in dev_idx:
+                subs2sen_dev[sub].append(sentId)
+            for sub in test_idx:
+                subs2sen_test[sub].append(sentId)
         trainsets, devsets, testsets = [], [], []
         for subject_id, subject in enumerate(subjects):
             trainsets.append(
-                Subset(preload_dataset[subject_id], train_indices[subject_id])
+                Subset(preload_dataset[subject_id], subs2sen_train[subject_id])
             )
-            devsets.append(Subset(preload_dataset[subject_id], dev_indices[subject_id]))
+            devsets.append(
+                Subset(preload_dataset[subject_id], subs2sen_dev[subject_id])
+            )
             testsets.append(
-                Subset(preload_dataset[subject_id], test_indices[subject_id])
+                Subset(preload_dataset[subject_id], subs2sen_test[subject_id])
             )
-
-        # Get EEG feature size from the first sample
-        sample_eeg = all_data[0][2]["eeg_raw"]
-        for sample in dataset:
-            sample_eeg = sample["eeg_raw"]
-            break
+        sample_eeg = trainsets[0][0]["eeg_raw"]
 
         # Concatenate all datasets
         return (
@@ -135,8 +121,8 @@ class EEGDataset(ConcatDataset):
                 trainsets,
                 text_transform,
                 num_features=sample_eeg.shape[1],
-                time_mask_param=50,
-                freq_mask_param=10,
+                time_mask_param=time_mask_param,
+                freq_mask_param=freq_mask_param,
             ),
             cls(
                 devsets,

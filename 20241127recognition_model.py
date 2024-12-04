@@ -16,6 +16,7 @@ from eeg_architecture import EEGModel
 import gc
 import json
 import wandb
+import pickle
 
 from pathlib import Path
 from absl import flags
@@ -286,7 +287,7 @@ def main():
         "S18",
         "S19",
         "S22",
-        "S26",
+        # "S26",
         "S36",
         "S37",
         # "S38", missing one channel
@@ -300,27 +301,48 @@ def main():
 
     # Train on 2x, 3x, 4x... increase subjects in this list
     # generated_subjects = [""]
+    d = Path("/ocean/projects/cis240129p/shared/data/eeg_alice/datasets/seq2seq")
+    # check if trainset.pkl, devset.pkl, testset.pkl exist in the path, if not create them and pickel them
+    if (
+        not os.path.exists(d / "trainset.pkl")
+        or not os.path.exists(d / "devset.pkl")
+        or not os.path.exists(d / "testset.pkl")
+    ):
+        trainset, devset, testset = EEGDataset.from_subjects(
+            subjects=subjects,
+            # generated_subjects=generated_subjects,
+            base_dir=base_dir,
+            train_ratio=0.8,
+            dev_ratio=0.1,
+            test_ratio=0.1,
+        )
+        train_max_seq_len = trainset.verify_dataset()
+        dev_max_seq_len = devset.verify_dataset()
+        test_max_seq_len = testset.verify_dataset()
 
-    trainset, devset, testset = EEGDataset.from_subjects(
-        subjects=subjects,
-        # generated_subjects=generated_subjects,
-        base_dir=base_dir,
-        train_ratio=0.8,
-        dev_ratio=0.1,
-        test_ratio=0.1,
-    )
+        max_seq_len = max(train_max_seq_len, dev_max_seq_len, test_max_seq_len)
 
-    train_max_seq_len = trainset.verify_dataset()
-    dev_max_seq_len = devset.verify_dataset()
-    test_max_seq_len = testset.verify_dataset()
+        logging.info(
+            "train / dev / test split: %d %d %d",
+            len(trainset),
+            len(devset),
+            len(testset),
+        )
 
-    max_seq_len = max(train_max_seq_len, dev_max_seq_len, test_max_seq_len)
-
-    logging.info(
-        "train / dev / test split: %d %d %d", len(trainset), len(devset), len(testset)
-    )
-
-    logging.info("max sequence length: %d", max_seq_len)
+        logging.info("max sequence length: %d", max_seq_len)
+        with open(d / "trainset.pkl", "wb") as f:
+            pickle.dump(trainset, f)
+        with open(d / "devset.pkl", "wb") as f:
+            pickle.dump(devset, f)
+        with open(d / "testset.pkl", "wb") as f:
+            pickle.dump(testset, f)
+    else:
+        with open(d / "trainset.pkl", "rb") as f:
+            trainset = pickle.load(f)
+        with open(d / "devset.pkl", "rb") as f:
+            devset = pickle.load(f)
+        with open(d / "testset.pkl", "rb") as f:
+            testset = pickle.load(f)
 
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
     print("device:", device)
