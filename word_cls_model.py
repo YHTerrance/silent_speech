@@ -13,6 +13,7 @@ import gc
 from pathlib import Path
 from absl import flags
 import wandb
+import numpy as np
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("output_directory", "output", "where to save models and outputs")
@@ -22,12 +23,13 @@ flags.DEFINE_float("l2", 0, "weight decay")
 flags.DEFINE_integer("epochs", 100, "number of training epochs")
 flags.DEFINE_integer("batch_size", 8, "training batch size")
 flags.DEFINE_float("learning_rate", 3e-4, "learning rate")
+flags.DEFINE_integer("learning_rate_warmup", 1000, "steps of linear warmup")
 flags.DEFINE_integer("k", 10, "top k accuracy")
 flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
 flags.DEFINE_string("wandb_name", "word_cls", "wandb run name")
 
 
-def train_model(trainset, devset, device, max_seq_len):
+def train_model(trainset, devset, device):
     wandb.login(key="1b4a08dec829dd8f2d99985b647c44f28c0e2b23", relogin=True)
     run = wandb.init(
         name=FLAGS.wandb_name,
@@ -45,6 +47,7 @@ def train_model(trainset, devset, device, max_seq_len):
         num_workers=0,
         collate_fn=trainset.collate_raw,
         batch_size=FLAGS.batch_size,
+        shuffle=True,
     )
     n_chars = trainset.text_transform.vocabs_size
     model = EEGModel(devset.num_features, n_chars).to(device)
@@ -66,10 +69,28 @@ def train_model(trainset, devset, device, max_seq_len):
         model.parameters(), lr=FLAGS.learning_rate, weight_decay=0.01
     )
     # lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=20)
-    lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optim, patience=5, factor=0.5, mode="max"
+    # lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     optim, patience=5, factor=0.5, mode="max"
+    # )
+    lr_sched = torch.optim.lr_scheduler.MultiStepLR(
+        optim, milestones=[125, 150, 175], gamma=0.5
     )
-    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
+
+    def set_lr(new_lr):
+        for param_group in optim.param_groups:
+            param_group["lr"] = new_lr
+
+    target_lr = FLAGS.learning_rate
+
+    def schedule_lr(iteration):
+        iteration = iteration + 1
+        if iteration <= FLAGS.learning_rate_warmup:
+            set_lr(iteration * target_lr / FLAGS.learning_rate_warmup)
+
+    # Load class weight numpy array from class_weight.npy
+    weights = np.load("class_weights.npy")
+    weights = torch.tensor(weights).float().to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
     k = FLAGS.k
     best_topk = 0.0
     optim.zero_grad()
@@ -80,7 +101,9 @@ def train_model(trainset, devset, device, max_seq_len):
         total = 0
         model.train()
         curr_lr = float(optim.param_groups[0]["lr"])
+        batch_idx = 0
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
+            schedule_lr(batch_idx)
             X = torch.stack(example["eeg_raw"]).float().to(device)  # [B x T x C]
             pred = model(X)
             y = torch.tensor(example["text_int"]).to(device)  # [B]
@@ -96,16 +119,17 @@ def train_model(trainset, devset, device, max_seq_len):
             top_k_correct += (top_k_indices == y_expanded).sum().item()
             total += y.size(0)
             torch.cuda.empty_cache()
+            batch_idx += 1
 
         train_loss = running_loss / len(dataloader)
         accuracy = correct / total
         top_k_accuracy = top_k_correct / total if total > 0 else 0.0
         val_acc, val_topk = test(model, devset, device)
-        lr_sched.step(val_acc)
+        lr_sched.step()
         logging.info(
             f"epoch {epoch_idx+1} - training loss: {train_loss:.4f} acc:{accuracy*100:.2f} "
             f"top-{k} acc: {top_k_accuracy*100:.2f} "
-            f"validation acc: {val_acc*100:.2f} top-{k} acc: {val_topk*100:.2f}"
+            f"validation acc: {val_acc*100:.2f} top-{k} acc: {val_topk*100:.2f} "
             f"lr: {curr_lr}"
         )
         wandb.log(
@@ -204,7 +228,7 @@ def main():
         "S18",
         "S19",
         "S22",
-        "S26",
+        # "S26",
         "S36",
         "S37",
         # "S38", missing one channel
@@ -224,24 +248,27 @@ def main():
         subjects=subjects,
         # generated_subjects=generated_subjects,
         base_dir=base_dir,
+        train_ratio=0.8,
+        dev_ratio=0.1,
+        test_ratio=0.1,
     )
 
-    train_max_seq_len = trainset.verify_dataset()
-    dev_max_seq_len = devset.verify_dataset()
-    test_max_seq_len = testset.verify_dataset()
+    # train_max_seq_len = trainset.verify_dataset()
+    # dev_max_seq_len = devset.verify_dataset()
+    # test_max_seq_len = testset.verify_dataset()
 
-    max_seq_len = max(train_max_seq_len, dev_max_seq_len, test_max_seq_len)
+    # max_seq_len = max(train_max_seq_len, dev_max_seq_len, test_max_seq_len)
 
-    logging.info(
-        "train / dev / test split: %d %d %d", len(trainset), len(devset), len(testset)
-    )
+    # logging.info(
+    #     "train / dev / test split: %d %d %d", len(trainset), len(devset), len(testset)
+    # )
 
-    logging.info("max sequence length: %d", max_seq_len)
+    # logging.info("max sequence length: %d", max_seq_len)
 
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
     print("device:", device)
 
-    model = train_model(trainset, devset, device, max_seq_len)
+    model = train_model(trainset, devset, device)
     test_acc, test_topk = test(model, testset, device)
     logging.info(
         f"test accuracy: {test_acc*100:.2f} top-{FLAGS.k} acc: {test_topk*100:.2f}"

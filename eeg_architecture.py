@@ -1,5 +1,5 @@
 import random
-
+import torch
 from torch import nn
 import torch.nn.functional as F
 
@@ -62,9 +62,13 @@ class EEGModel(nn.Module):
             dropout=FLAGS.dropout,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.flatten = nn.Flatten()
+
+        # self.avgpool = nn.AdaptiveAvgPool1d(1)
+        # self.flatten = nn.Flatten()
+
         self.w_out = nn.Linear(FLAGS.model_size, num_outs)
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, FLAGS.model_size))
 
     def forward(self, x_raw):
         # x shape is (batch, time, electrode)
@@ -77,12 +81,20 @@ class EEGModel(nn.Module):
 
         x = x_raw
 
+        # add cls token
+        cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
         # put time first because transformers expect input int the shape (sequence length, batch size, feature dim)
         x = x.transpose(0, 1)
         x = self.transformer(x)
         x = x.transpose(0, 1)
-        x = x.transpose(1, 2)  # B x C x T
-        x = self.avgpool(x)  # B x C x 1
-        x = x.transpose(1, 2)  # B x 1 x C
-        x = self.flatten(x)  # (B, 1, C) -> (B, C)
-        return self.w_out(x)
+
+        cls_output = x[:, 0, :]
+
+        # x = x.transpose(1, 2)  # B x C x T
+        # x = self.avgpool(x)  # B x C x 1
+        # x = x.transpose(1, 2)  # B x 1 x C
+        # x = self.flatten(x)  # (B, 1, C) -> (B, C)
+
+        return self.w_out(cls_output)

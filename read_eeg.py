@@ -154,10 +154,21 @@ class EEGDataset(ConcatDataset):
     # @staticmethod
     def collate_raw(self, batch):
         batch_size = len(batch)
-        eeg_raw = [ex["eeg_raw"] for ex in batch]  # B x T x C
+        # eeg_raw = [ex["eeg_raw"] for ex in batch]  # B x T x C
         lengths = [ex["eeg_raw"].shape[0] for ex in batch]
         text_ints = [ex["label_int"] for ex in batch]
         # text_lengths = [ex["label_int"].shape[0] for ex in batch]
+        max_seq_len = 520
+        eeg_raw = []
+        for i in range(batch_size):
+            eeg = batch[i]["eeg_raw"]  # Tensor of shape [T, C]
+            if eeg.shape[0] < max_seq_len:  # Pad shorter sequences
+                pad_length = max_seq_len - eeg.shape[0]
+                eeg_raw.append(
+                    torch.cat([eeg, torch.zeros(pad_length, eeg.shape[1])], dim=0)
+                )  # Shape: [max_seq_len, C]
+            else:  # Truncate longer sequences
+                eeg_raw.append(eeg[:max_seq_len])
         labels = [ex["label"] for ex in batch]
         if self.time_masking or self.freq_masking:
             for i in range(batch_size):
@@ -190,7 +201,7 @@ class EEGDataset(ConcatDataset):
 
         # Track dimensions of first sample for comparison
         first_sample = self[0]
-        eeg_dims = first_sample["eeg_raw"].shape[1]
+        eeg_dims = first_sample["eeg_raw"].shape
 
         # Track max sequence length
         max_seq_len = 0
@@ -202,8 +213,8 @@ class EEGDataset(ConcatDataset):
 
             # Check dimensions
             assert (
-                sample["eeg_raw"].shape[1] == eeg_dims
-            ), f"Sample {i} has inconsistent EEG dimensions: {sample['eeg_raw'].shape[1]} vs {eeg_dims}"
+                sample["eeg_raw"].shape == eeg_dims
+            ), f"Sample {i} has inconsistent EEG dimensions: {sample['eeg_raw'].shape} vs {eeg_dims}"
 
             # Check for invalid values
             assert torch.isfinite(
