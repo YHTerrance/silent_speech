@@ -10,9 +10,9 @@ import torch.nn.functional as F
 import numpy as np
 from data_utils import decollate_tensor, combine_fixed_length, save_model
 from ctcdecode import CTCBeamDecoder
-from read_emg import EMGDataset
-from read_eeg import EEGDataset
+from read_eeg import EEGDataset, load_datasets
 from eeg_architecture import EEGModel
+from config import subjects
 import gc
 import json
 import wandb
@@ -23,20 +23,24 @@ from absl import flags
 import pdb
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string("output_directory", "output", "where to save models and outputs")
+flags.DEFINE_string("output_directory", "output",
+                    "where to save models and outputs")
 flags.DEFINE_boolean("debug", False, "debug")
-flags.DEFINE_string("start_training_from", None, "start training from this model")
+flags.DEFINE_string("start_training_from", None,
+                    "start training from this model")
 flags.DEFINE_float("l2", 0, "weight decay")
 flags.DEFINE_integer("epochs", 100, "number of training epochs")
 flags.DEFINE_integer("batch_size", 8, "training batch size")
 flags.DEFINE_float("learning_rate", 3e-4, "learning rate")
 flags.DEFINE_integer("learning_rate_warmup", 1000, "steps of linear warmup")
-flags.DEFINE_integer("learning_rate_patience", 5, "learning rate decay patience")
-flags.DEFINE_string("evaluate_saved", None, "run evaluation on given model file")
+flags.DEFINE_integer("learning_rate_patience", 5,
+                     "learning rate decay patience")
+flags.DEFINE_string("evaluate_saved", None,
+                    "run evaluation on given model file")
 flags.DEFINE_string("wandb_name", "word_cls", "wandb run name")
 
 
-def train_model(trainset, devset, device, max_seq_len):
+def train_model(trainset, devset, device):
     torch.cuda.empty_cache()
     gc.collect()
     n_epochs = FLAGS.epochs
@@ -109,7 +113,8 @@ def train_model(trainset, devset, device, max_seq_len):
         results = []
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
             schedule_lr(batch_idx)
-            X = combine_fixed_length(example["eeg_raw"], 5000).float().to(device)
+            X = combine_fixed_length(
+                example["eeg_raw"], 5000).float().to(device)
             pred = model(X)
             pred = F.log_softmax(pred, 2)
 
@@ -133,20 +138,23 @@ def train_model(trainset, devset, device, max_seq_len):
             loss.backward()
             pred = pred.permute(1, 0, 2)
             beam_results, _, _, out_lens = decoder.decode(
-                pred, seq_lens=torch.tensor(pred_lengths)  # pred should be B x T x C
+                # pred should be B x T x C
+                pred, seq_lens=torch.tensor(pred_lengths)
             )
 
             # Calculate WER for each batch
             references = []
             predictions = []
             for i in range(len(y)):
-                target_text = trainset.text_transform.int_to_text(y[i].cpu().numpy())
+                target_text = trainset.text_transform.int_to_text(
+                    y[i].cpu().numpy())
                 # target_text = target_text.replace(trainset.text_transform.pad_token, "")
                 references.append(target_text.strip())
                 if i < len(beam_results):
                     pred_int = beam_results[i, 0, : out_lens[i, 0]].tolist()
                     try:
-                        pred_text = trainset.text_transform.int_to_text(pred_int)
+                        pred_text = trainset.text_transform.int_to_text(
+                            pred_int)
                         # pred_text = pred_text.replace(
                         #     trainset.text_transform.pad_token, ""
                         # )
@@ -154,7 +162,8 @@ def train_model(trainset, devset, device, max_seq_len):
                         print(f"!!!ERROR!!! batch idx: {batch_idx}, i: {i}")
                         exit()
                     predictions.append(pred_text.strip())
-                    results.append({"original": target_text, "predicted": pred_text})
+                    results.append(
+                        {"original": target_text, "predicted": pred_text})
             wer = jiwer.wer(references, predictions)
             wers.append(wer)
             if (batch_idx + 1) % 2 == 0:
@@ -230,7 +239,8 @@ def test(model, testset, device, epoch_idx=0):
             pred_int = beam_results[0, 0, : out_lens[0, 0]].tolist()
 
             pred_text = testset.text_transform.int_to_text(pred_int)
-            target_text = testset.text_transform.clean_text(example["label"][0])
+            target_text = testset.text_transform.clean_text(
+                example["label"][0])
 
             references.append(target_text)
             predictions.append(pred_text)
@@ -262,7 +272,8 @@ def main():
     os.makedirs(FLAGS.output_directory, exist_ok=True)
     logging.basicConfig(
         handlers=[
-            logging.FileHandler(os.path.join(FLAGS.output_directory, "log.txt"), "w"),
+            logging.FileHandler(os.path.join(
+                FLAGS.output_directory, "log.txt"), "w"),
             logging.StreamHandler(),
         ],
         level=logging.INFO,
@@ -271,83 +282,11 @@ def main():
 
     logging.info(sys.argv)
 
-    base_dir = Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
-
-    subjects = [
-        "S01",
-        "S03",
-        "S04",
-        # "S05", missing one channel
-        "S08",
-        "S11",
-        "S12",
-        "S13",
-        "S16",
-        "S17",
-        "S18",
-        "S19",
-        "S22",
-        # "S26",
-        "S36",
-        "S37",
-        # "S38", missing one channel
-        "S40",
-        "S41",
-        "S42",
-        "S44",
-        "S48",
-    ]
-    # subjects = ["S04", "S13"]
-
-    # Train on 2x, 3x, 4x... increase subjects in this list
-    # generated_subjects = [""]
-    d = Path("/ocean/projects/cis240129p/shared/data/eeg_alice/datasets/seq2seq")
-    # check if trainset.pkl, devset.pkl, testset.pkl exist in the path, if not create them and pickel them
-    if (
-        not os.path.exists(d / "trainset.pkl")
-        or not os.path.exists(d / "devset.pkl")
-        or not os.path.exists(d / "testset.pkl")
-    ):
-        trainset, devset, testset = EEGDataset.from_subjects(
-            subjects=subjects,
-            # generated_subjects=generated_subjects,
-            base_dir=base_dir,
-            train_ratio=0.8,
-            dev_ratio=0.1,
-            test_ratio=0.1,
-        )
-        train_max_seq_len = trainset.verify_dataset()
-        dev_max_seq_len = devset.verify_dataset()
-        test_max_seq_len = testset.verify_dataset()
-
-        max_seq_len = max(train_max_seq_len, dev_max_seq_len, test_max_seq_len)
-
-        logging.info(
-            "train / dev / test split: %d %d %d",
-            len(trainset),
-            len(devset),
-            len(testset),
-        )
-
-        logging.info("max sequence length: %d", max_seq_len)
-        with open(d / "trainset.pkl", "wb") as f:
-            pickle.dump(trainset, f)
-        with open(d / "devset.pkl", "wb") as f:
-            pickle.dump(devset, f)
-        with open(d / "testset.pkl", "wb") as f:
-            pickle.dump(testset, f)
-    else:
-        with open(d / "trainset.pkl", "rb") as f:
-            trainset = pickle.load(f)
-        with open(d / "devset.pkl", "rb") as f:
-            devset = pickle.load(f)
-        with open(d / "testset.pkl", "rb") as f:
-            testset = pickle.load(f)
-
     device = "cuda" if torch.cuda.is_available() and not FLAGS.debug else "cpu"
     print("device:", device)
 
-    model = train_model(trainset, devset, device, max_seq_len)
+    trainset, devset, testset = load_datasets(subjects, dataset_type="seq2seq")
+    model = train_model(trainset, devset, device)
     test_wer = test(model, testset, device)
     logging.info("Test WER: %f", test_wer)
 

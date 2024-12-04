@@ -1,8 +1,8 @@
 import random
 
+import torch
 from torch import nn
 import torch.nn.functional as F
-
 from transformer import TransformerEncoderLayer
 
 from absl import flags
@@ -42,7 +42,66 @@ class ResBlock(nn.Module):
         return F.relu(x + res)
 
 
-class EEGModel(nn.Module):
+class EEGWordClsModel(nn.Module):
+    def __init__(self, num_features, num_outs):
+        super().__init__()
+
+        self.conv_blocks = nn.Sequential(
+            ResBlock(num_features, FLAGS.model_size, 2),
+            ResBlock(FLAGS.model_size, FLAGS.model_size, 2),
+        )
+        self.w_raw_in = nn.Linear(FLAGS.model_size, FLAGS.model_size)
+
+        encoder_layer = TransformerEncoderLayer(
+            d_model=FLAGS.model_size,
+            nhead=8,
+            relative_positional=True,
+            relative_positional_distance=100,
+            dim_feedforward=3072,
+            dropout=FLAGS.dropout,
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, FLAGS.num_layers)
+
+        # self.avgpool = nn.AdaptiveAvgPool1d(1)
+        # self.flatten = nn.Flatten()
+
+        self.w_out = nn.Linear(FLAGS.model_size, num_outs)
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, FLAGS.model_size))
+
+    def forward(self, x_raw):
+        # x shape is (batch, time, electrode)
+
+        # TODO: figure out wtf this is
+        # put channel before time for conv B x C x T
+        x_raw = x_raw.transpose(1, 2)
+        x_raw = self.conv_blocks(x_raw)
+        x_raw = x_raw.transpose(1, 2)  # transpose back to B x T x C
+        x_raw = self.w_raw_in(x_raw)
+
+        x = x_raw
+
+        # add cls token
+        cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # put time first because transformers expect input int the shape (sequence length, batch size, feature dim)
+        x = x.transpose(0, 1)
+        x = self.transformer(x)
+        x = x.transpose(0, 1)
+
+        cls_output = x[:, 0, :]
+
+        # x = x.transpose(1, 2)  # B x C x T
+        # x = self.avgpool(x)  # B x C x 1
+        # x = x.transpose(1, 2)  # B x 1 x C
+        # x = self.flatten(x)  # (B, 1, C) -> (B, C)
+
+        return self.w_out(cls_output)
+
+
+class EEGSeqtoSeqModel(nn.Module):
     def __init__(self, num_features, num_outs):
         super().__init__()
 
@@ -61,14 +120,14 @@ class EEGModel(nn.Module):
             dim_feedforward=3072,
             dropout=FLAGS.dropout,
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, FLAGS.num_layers)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, FLAGS.num_layers)
         self.w_out = nn.Linear(FLAGS.model_size, num_outs)
 
     def forward(self, x_raw):
         # x shape is (batch, time, electrode)
-
-        # TODO: figure out wtf this is
-        x_raw = x_raw.transpose(1, 2)  # put channel before time for conv B x C x T
+        # put channel before time for conv B x C x T
+        x_raw = x_raw.transpose(1, 2)
         x_raw = self.conv_blocks(x_raw)
         x_raw = x_raw.transpose(1, 2)  # transpose back to B x T x C
         x_raw = self.w_raw_in(x_raw)
