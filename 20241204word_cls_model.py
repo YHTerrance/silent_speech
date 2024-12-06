@@ -9,16 +9,18 @@ import torch.nn.functional as F
 from config import subjects
 from data_utils import save_model
 from read_eeg import EEGDataset, load_datasets
-from eeg_architecture import EEGWordClsModel
+from eeg_architecture import EEGWordClsModel, EEGAutoencoder
 import gc
 from pathlib import Path
 from absl import flags
 import wandb
+import pickle
+import numpy as np
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("output_directory", "output",
                     "where to save models and outputs")
-flags.DEFINE_boolean("debug", True, "debug")
+flags.DEFINE_boolean("debug", False, "debug")
 flags.DEFINE_string("start_training_from", None,
                     "start training from this model")
 flags.DEFINE_float("l2", 0, "weight decay")
@@ -62,6 +64,15 @@ def train_model(trainset, devset, device):
     model = EEGWordClsModel(devset.num_features, n_chars).to(device)
     model_arch = str(model)
     model_path = os.path.join(expt_root, "model_arch.txt")
+    #load var mdoel and dicts******************
+    vae_model = EEGAutoencoder(sequence_length=520, feature_dim=60, latent_dim=64).to(device)
+    vae_model.load_state_dict(torch.load("/ocean/projects/cis240129p/shared/data/eeg_alice/eegvae_raw_linear_epoch20.pth"))
+    vae_model.eval()
+    with open("/ocean/projects/cis240129p/shared/data/eeg_alice/final_raw_20_mean_dict.pkl", 'rb') as file:
+        mean_dict = pickle.load(file)
+    with open("/ocean/projects/cis240129p/shared/data/eeg_alice/final_raw_20_std_dict.pkl", 'rb') as file:
+        std_dict = pickle.load(file)
+    
     arch_file = open(model_path, "w")
     file_write = arch_file.write(model_arch)
     arch_file.close()
@@ -98,8 +109,21 @@ def train_model(trainset, devset, device):
         curr_lr = float(optim.param_groups[0]["lr"])
 
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
+            #print(example["eeg_raw"].shape)
+            for i in range(len(example["eeg_raw"])):
+                if np.random.rand() < 0.5:
+                    with torch.no_grad():
+                        mean_latent = mean_dict[example["words"][i]]
+                        var_latent = std_dict[example["words"][i]]
+                        eps = torch.randn_like(var_latent)
+                        z = mean_latent + eps * torch.sqrt(var_latent)
+                        generated = vae_model.decode(z.unsqueeze(0).to(device))[0]
+                        example["eeg_raw"][i] = generated.to("cpu")
+                    
+
             X = torch.stack(example["eeg_raw"]).float().to(
                 device)  # [B x T x C]
+            #print(X.shape)
             pred = model(X)
             y = torch.tensor(example["word_ints"]).to(device)  # [B]
             loss = criterion(pred, y)

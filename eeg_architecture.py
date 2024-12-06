@@ -140,3 +140,100 @@ class EEGSeqtoSeqModel(nn.Module):
         x = x.transpose(0, 1)
 
         return self.w_out(x)
+
+
+class EEGAutoencoder(nn.Module):
+    def __init__(self, sequence_length=520, feature_dim=60,latent_dim=256):
+        super(EEGAutoencoder, self).__init__()
+        
+        self.input_dim = sequence_length * feature_dim
+        self.sequence_length = sequence_length
+        self.feature_dim = feature_dim
+        
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(self.input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+        )
+        
+        
+        '''self.encoder = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=(3,3), stride=(2,1), padding=(1,1)),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=(3,3), stride=(2,1), padding=(1,1)),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+        )'''
+        
+        #for convolutional
+        '''x = torch.randn(1, 1, self.sequence_length, feature_dim)
+        x = self.encoder(x)
+        self.flattened_size = x.shape[1] * x.shape[2] * x.shape[3]
+        self.conv_shape = x.shape[1:]'''
+        
+        # Latent space
+        self.fc_mu = nn.Linear(256, latent_dim)
+        self.fc_var = nn.Linear(256, latent_dim)
+        
+        # Decoder
+        '''self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 2048),
+            nn.ReLU(),
+            nn.Linear(2048, self.input_dim),
+            nn.Tanh()
+        )'''
+        
+        #self.decoder_input = nn.Linear(latent_dim, 1024)
+        
+        '''self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=(3,3), stride=(2,1), padding=(1,1), output_padding=(1,0)),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 1, kernel_size=(3,3), stride=(2,1), padding=(1,1), output_padding=(1,0)),
+            
+        )'''
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Linear(512, self.input_dim),
+        )
+        
+        
+        
+    def encode(self, x):
+        x = x.view(x.size(0), -1)  #flattens to 2dim, for linear layers
+        #x = x.unsqueeze(1)   #for convolutional
+        x = self.encoder(x) 
+        #x = x.view(x.size(0), -1)    #for convolutional
+        mu = self.fc_mu(x)
+        log_var = self.fc_var(x)
+        return mu, log_var
+    
+    def reparameterize(self, mu, log_var):
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    #decode for linear
+    def decode(self, z):
+        x = self.decoder(z)
+        return x.view(-1, self.sequence_length, self.feature_dim)
+        
+    #decode for convolutional
+    '''def decode(self, z):
+        x = self.decoder_input(z)
+        x = x.view(-1, *self.conv_shape)
+        x = self.decoder(x)
+        return x.squeeze(1)'''
+    
+    def forward(self, x):
+        mu, log_var = self.encode(x)
+        z = self.reparameterize(mu, log_var)
+        return self.decode(z), mu, log_var
