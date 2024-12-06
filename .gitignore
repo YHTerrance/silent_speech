@@ -1,7 +1,7 @@
 .vscode/
 __pycache__/
 emg_data/
-models/
+*.pt
 deepspeech-0.7.0-models.pbmm
 deepspeech-0.7.0-models.scorer
 lm.binary

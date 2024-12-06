@@ -5,17 +5,15 @@ import librosa
 import string
 import math
 import mne
+from typing import Literal
+from sklearn.preprocessing import RobustScaler
 
+import pdb
 import pandas as pd
-import soundfile as sf
 import numpy as np
-from textgrids import TextGrid
 
 import matplotlib.pyplot as plt
-
-# fmt: off
-phoneme_inventory = ['aa','ae','ah','ao','aw','ax','axr','ay','b','ch','d','dh','dx','eh','el','em','en','er','ey','f','g','hh','hv','ih','iy','jh','k','l','m','n','nx','ng','ow','oy','p','r','s','sh','t','th','uh','uw','v','w','y','z','zh','sil']
-# fmt: on
+from data_utils import TextTransform
 
 
 def apply_to_all(function, signal_array, *args, **kwargs):
@@ -95,7 +93,8 @@ def get_semg_feats_orig(
             plt.plot(r_h)
 
             plt.subplot(7, 1, 7)
-            plt.imshow(s, origin="lower", aspect="auto", interpolation="nearest")
+            plt.imshow(s, origin="lower", aspect="auto",
+                       interpolation="nearest")
 
             plt.show()
 
@@ -139,143 +138,34 @@ def load_eeg(fname):
     return raw_eeg
 
 
-def get_audio_feats(
-    audio,
-    n_mel_channels=128,
-    filter_length=512,
-    win_length=432,
-    hop_length=160,
-    r=16_000,
-):
-    audio_features = librosa.feature.melspectrogram(
-        y=audio,
-        sr=r,
-        n_mels=n_mel_channels,
-        center=False,
-        n_fft=filter_length,
-        win_length=win_length,
-        hop_length=hop_length,
-    ).T
-    audio_features = np.log(audio_features + 1e-5)
-    return audio_features.astype(np.float32)
+def preprocess_eeg(eeg_data):  # based on Meta
+    # Remove last two channels
+    eeg_data = eeg_data[:-2, :]
 
+    # Apply baseline correction
+    baseline = np.mean(eeg_data[:, : int(0.5 * 120)], axis=1)
+    eeg_data -= baseline[:, None]
 
-def load_audio(fname):
-    audio, r = sf.read(fname)
-    if r != 16_000:
-        audio = librosa.resample(audio, orig_sr=r, target_sr=16_000)
-        r = 16_000
-    assert r == 16_000
+    # Robust scaling using scikit-learn
+    scaler = RobustScaler()
+    eeg_data = scaler.fit_transform(eeg_data.T).T
 
-    return audio
+    # Clipping the outliers below 5th percentile and above 95th percentile
+    eeg_data = np.clip(
+        eeg_data, np.percentile(eeg_data, 5), np.percentile(eeg_data, 95)
+    )
 
+    # Clamping values greater than 20 standard deviations
+    std = np.std(eeg_data)
+    mean = np.mean(eeg_data)
+    eeg_data = np.clip(eeg_data, mean - 20 * std, mean + 20 * std)
 
-def load_phonemes(textgrid_fname, audio_feats, phoneme_dict):
-    tg = TextGrid(textgrid_fname)
-    phone_intervals = tg["phones"]
+    # Standard normalization for EEG
+    eeg_mean = eeg_data.mean()
+    eeg_std = eeg_data.std()
+    eeg_data = (eeg_data - eeg_mean) / eeg_std
 
-    seq_len = audio_feats.shape[0]
-    phone_ids = np.zeros(seq_len, dtype=np.int64)
-    phone_ids[phone_ids == 0] = -1
-
-    for interval in phone_intervals:
-        xmin = interval.xmin
-        xmax = interval.xmax
-
-        phone = interval.text.lower()
-        if phone in ["", "sp", "spn"]:
-            phone = "sil"
-        if phone[-1] in string.digits:
-            phone = phone[:-1]
-        ph_id = phoneme_dict.index(phone)
-
-        phone_win_start = int(xmin * 100)
-        phone_duration = xmax - xmin
-        phone_win_duration = int(math.ceil(phone_duration * 100))
-        phone_win_end = phone_win_start + phone_win_duration
-
-        phone_ids[phone_win_start:phone_win_end] = ph_id
-
-    ii = np.where(phone_ids == -1)[0]
-
-    assert (phone_ids >= 0).all(), "missing aligned phones"
-    return phone_ids
-
-
-def load_phoneme_dict(phoneme_dict_path):
-    with open(phoneme_dict_path) as f:
-        content = [l.split(":")[1].strip() for l in f.read().split("\n")]
-    return content
-
-
-"""
-def get_phone_idxs(audio_start,
-                   audio_end,
-                   audio_feats,
-                   phoneme_intervals,
-                   phoneme_dict,
-                   debug=False):
-    # max_ms_dist := how close phoneme needs to be to be considered start of phoneme range
-    seq_len   = audio_feats.shape[0]
-    phone_ids = np.zeros(seq_len, dtype=np.int64)
-    phone_ids[phone_ids == 0] = -1
-    # max_dist = max_ms_dist / 1000
-    
-    # ---
-    phone = interval.text.lower()
-    # Convert silent phoneme token and strip digits
-    if phone in ["", "sp", "spn"]:
-        phone = "sil"
-    if phone[-1] in string.digits:
-        phone = phone[:-1]
-    ph_id = phoneme_dict.index(phone)
-    # ---
-
-    # Contains the expanded phoneme classes with the entire overlapping phoneme classes
-    # print("seq len:", seq_len)
-    # print("phoneme_dict:", phoneme_dict)
-
-    rel_phoneme_count = 0 # Phonemes found within desired segment window
-
-    for interval in phoneme_intervals:
-        xmin = interval.xmin
-        xmax = interval.xmax
-        if debug:
-            print("interval:", interval, xmin, xmax, audio_start, audio_end)
-        if xmin >= audio_start and xmin <= audio_end or \
-           xmax >= audio_start and xmax <= audio_end:
-            phone = interval.text.lower()
-            if phone in ["", "sp", "spn"]:
-                phone = "sil"
-            if phone[-1] in string.digits:
-                phone = phone[:-1]
-            ph_id = phoneme_dict.index(phone)
-
-            phone_duration  = (interval.xmax - interval.xmin) #- phone_overspill
-            phone_win_start_d = int((xmin - audio_start) * 100)
-            
-            phone_win_start = phone_win_start_d
-
-            if phone_win_start_d >= 0:
-                phone_win_start = max(rel_phoneme_count, phone_win_start_d)
-            else:
-                phone_win_start = 0
-
-            phone_win_duration = int(math.ceil(phone_duration * 100))
-            phone_win_end   = phone_win_start + phone_win_duration
-
-            phone_ids[phone_win_start:phone_win_end] = ph_id
-
-            rel_phoneme_count += 1
-
-    # print(segment_phonemes[0], segment_phonemes[-1])
-    # print("phone_ids:", phone_ids, phone_ids.shape)
-    
-    if debug:
-        print([phoneme_dict[phone] for phone in list(phone_ids)])
-    assert (phone_ids >= 0).all(), 'missing aligned phones' # f'missing aligned phones: {phone_ids}"
-    return phone_ids
-"""
+    return eeg_data
 
 
 class BrennanDataset(torch.utils.data.Dataset):
@@ -286,147 +176,74 @@ class BrennanDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         root_dir,
-        phoneme_dir,
         idx,
-        max_items=0,
-        phoneme_dict_path="./phoneme_dict.txt",
+        text_transform,
         debug=False,
     ):
         self.root_dir = root_dir
         self.idx = idx
-        self.phoneme_dir = phoneme_dir
-        self.phoneme_dict_path = phoneme_dict_path
         self.debug = debug
+        self.text_transform = text_transform
 
         # Metadata
         metadata_fi = os.path.join(root_dir, "AliceChapterOne-EEG.csv")
-        self.metadata = metadata = pd.read_csv(metadata_fi)
+        self.metadata = pd.read_csv(metadata_fi)
+
         proc = scipy.io.loadmat(os.path.join(root_dir, f"proc/{idx}.mat"))
         self.eeg_segments = eeg_segments = proc["proc"][0][0][4]
-        self.order_idx_s = order_idx_s = [seg[-1] for seg in eeg_segments]
-        if max_items > 0:
-            self.order_idx_s = self.order_idx_s[:max_items]
-        self.max_items = max_items
+        self.order_idx_s = [seg[-1] for seg in eeg_segments]
 
         # Labels
-        segment_labels = metadata[metadata["Order"].isin(order_idx_s)]
-        self.labels = segment_labels["Word"]
+        segment_labels = self.metadata[self.metadata["Order"].isin(
+            self.order_idx_s)]
+        self.labels = segment_labels["Word"]  # (2129,)
 
         # EEG
         eeg_path = os.path.join(root_dir, f"{idx}.vhdr")
         eeg_data = load_eeg(eeg_path)
         self.eeg_data = eeg_data
 
-        # Audio
-        audio_dir = os.path.join(root_dir, "audio")
-        audio_idx_range = range(1, 12 + 1 if not self.debug else 3 + 1)
-        self.audio_raw_s = [
-            load_audio(
-                os.path.join(
-                    audio_dir, f"DownTheRabbitHoleFinal_SoundFile{audio_idx}.wav"
-                )
-            )
-            for audio_idx in audio_idx_range
-        ]
-        self.audio_feat_s = [
-            get_audio_feats(
-                audio_raw,
-                hop_length=int(self.audio_hz / 100),
-                n_mel_channels=self.num_mels,
-            )
-            for audio_raw in self.audio_raw_s
-        ]
+        self.print_label_info()
 
-        # Phoneme Dictionary
-        phoneme_dict = load_phoneme_dict(phoneme_dict_path)
-        phoneme_dict = [phone.lower() for phone in phoneme_dict]
-        phoneme_dict[0] = "sil"
-        for sil_tok in ["sp", "spn"]:  # silence tokens
-            if sil_tok in phoneme_dict:
-                phoneme_dict.remove(sil_tok)
-        for i in range(len(phoneme_dict)):
-            if phoneme_dict[i][-1] in string.digits:
-                phoneme_dict[i] = phoneme_dict[i][:-1]
-        phoneme_dict = list(dict.fromkeys(phoneme_dict))
-        self.phoneme_dict = phoneme_dict
-
-        # Phonemes
-        phoneme_fis = os.listdir(phoneme_dir)
-        phoneme_idx_range = range(1, 12 + 1 if not self.debug else 3 + 1)
-        self.phoneme_s = [
-            load_phonemes(
-                os.path.join(
-                    phoneme_dir,
-                    f"DownTheRabbitHoleFinal_SoundFile{phoneme_idx_range[i]}.TextGrid",
-                ),
-                audio_feats,
-                phoneme_dict,
-            )
-            for i, audio_feats in enumerate(self.audio_feat_s)
-        ]
+    def print_label_info(self):
+        """Print information about the number and distribution of labels"""
+        num_labels = len(self.labels)
+        unique_labels = len(self.labels.unique())
+        print(f"Total number of labels: {num_labels}")
+        print(f"Number of unique labels: {unique_labels}")
 
     def __getitem__(self, i):
-        # Target Audio Hz
-        audio_hz = 16_000
 
-        # Metadata Segment
-        order_idx = self.order_idx_s[i]  # EEG
-        label = self.labels[i]  # Text Label
-        metadata_entry = self.metadata[self.metadata["Order"] == order_idx]
-        audio_segment = (
-            metadata_entry.iloc[0]["Segment"] - 1
-        )  # 0-index, not original 1-index
-
-        # Audio Segment
-        audio_len = self.audio_raw_s[audio_segment].shape[0] / audio_hz
-        audio_onset = metadata_entry.iloc[0]["onset"]
-        audio_start = max(audio_onset - 0.3, 0)
-        audio_end = min(audio_onset + 1.0, audio_len)
-        audio_start_idx = int(audio_start * audio_hz)
-        audio_end_idx = int(audio_end * audio_hz)
-        audio_raw = self.audio_raw_s[audio_segment][audio_start_idx:audio_end_idx]
-
-        # Audio Feats Segment
-        audio_start_win = int(audio_start * 100)
-        audio_end_win = int(audio_end * 100)
-        audio_feats = self.audio_feat_s[audio_segment][audio_start_win:audio_end_win]
+        # # Get all order indices for the sentence
+        # sentence_order_idxs = self.sentence_order_idxs[i]
+        # sentence = self.sentences.iloc[i]
+        label = self.labels[i]
 
         # EEG Segment
+        order_idx = self.order_idx_s[i]
         powerline_freq = 60  # Assumption based on US recordings
-        cur_eeg_segment = [seg for seg in self.eeg_segments if seg[-1] == order_idx][0]
+        cur_eeg_segment = [
+            seg for seg in self.eeg_segments if seg[-1] == order_idx][0]
         brain_shift = 150  # Mental response time to stimuli
         eeg_start_idx = int(cur_eeg_segment[0]) + brain_shift
         eeg_end_idx = int(cur_eeg_segment[1]) + brain_shift
         eeg_x = self.eeg_data[:, eeg_start_idx:eeg_end_idx]
         eeg_x = notch_harmonics(eeg_x, powerline_freq, 500)
         eeg_x = remove_drift(eeg_x, 500)
-        eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4)
+        # Meta's preprocessing
+        eeg_x = preprocess_eeg(eeg_x)
+        eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4, stft=False)
         eeg_raw = apply_to_all(subsample, eeg_x.T, 400, 500)
 
-        # Phoneme Segment
-        phonemes = self.phoneme_s[audio_segment][audio_start_win:audio_end_win]
-
-        """
-        # Phoneme Segment
-        phoneme_intervals = self.phoneme_s[audio_segment]
-        phonemes        = \
-            get_phone_idxs(
-                audio_start,
-                audio_end,
-                audio_feats,
-                phoneme_intervals,
-                self.phoneme_dict,
-                debug=self.debug)
-        """
+        # Get label int
+        label_int = self.text_transform.text_to_int(label)
 
         # Dict Segment
         data = {
-            "label": label,
-            "audio_feats": audio_feats,
-            "audio_raw": audio_raw,
-            "eeg_raw": eeg_raw,
-            "eeg_feats": eeg_feats,
-            "phonemes": phonemes,
+            "word": label,
+            "word_int": label_int,
+            "eeg_raw": torch.from_numpy(eeg_raw).pin_memory(),
+            "eeg_feats": torch.from_numpy(eeg_feats).pin_memory(),
         }
 
         if self.debug:
@@ -435,16 +252,108 @@ class BrennanDataset(torch.utils.data.Dataset):
         return data
 
     def __len__(self):
-        return len(self.order_idx_s)
+        return len(self.labels)
 
-    def get_label_idxs(self, target_label):
-        labels = list(self.labels)
-        # print(labels)
-        if self.max_items:
-            labels = labels[0 : self.max_items]
 
-        if target_label in labels:
-            matches = [i for i in range(len(labels)) if target_label == labels[i]]
-            return matches
-        else:
-            ValueError(f"Attempting to get label {target_label} which does not exist.")
+class BrennanSentenceDataset(torch.utils.data.Dataset):
+    num_features = 60 * 5
+    num_mels = 128
+    audio_hz = 16_000
+
+    def __init__(
+        self,
+        idx,
+        root_dir,
+        text_transform,
+        debug=False,
+    ):
+        self.root_dir = root_dir
+        self.idx = idx
+        self.debug = debug
+        self.text_transform = text_transform
+
+        # Metadata
+        metadata_fi = os.path.join(root_dir, "AliceChapterOne-EEG.csv")
+        self.metadata = metadata = pd.read_csv(metadata_fi)
+
+        # EEG Segments
+        proc = scipy.io.loadmat(os.path.join(root_dir, f"proc/{idx}.mat"))
+        self.eeg_segments = eeg_segments = proc["proc"][0][0][4]
+        self.order_idx_s = order_idx_s = [seg[-1] for seg in eeg_segments]
+
+        # Labels
+        segment_labels = metadata[metadata["Order"].isin(order_idx_s)]
+
+        # Modify metadata handling to group by sentences, and do some data cleaning on the sentences
+        self.sentences = segment_labels.groupby("Sentence")["Word"].apply(
+            lambda words: " ".join(word.replace(
+                "\x1a", "'").upper() for word in words)
+        )
+        self.sentence_groups = segment_labels.groupby("Sentence")
+
+        # Store order indices grouped by sentence
+        self.sentence_order_idxs = []
+        for sentence_id in self.sentences.index:
+            sentence_data = self.sentence_groups.get_group(sentence_id)
+            self.sentence_order_idxs.append(list(sentence_data["Order"]))
+
+        # EEG
+        eeg_path = os.path.join(root_dir, f"{idx}.vhdr")
+        eeg_data = load_eeg(eeg_path)
+        self.eeg_data = eeg_data
+
+        self.print_label_info()
+
+    def print_label_info(self):
+        """Print information about the number and distribution of labels"""
+        print(f"Total number of sentences: {len(self.sentences)}")
+        print(f"Number of unique sentences: {len(self.sentences.unique())}")
+
+    def __getitem__(self, i):
+
+        # Get all order indices for the sentence
+        sentence_order_idxs = self.sentence_order_idxs[i]
+        sentence = self.sentences.iloc[i]
+
+        # EEG Segment
+        start_order_idx = sentence_order_idxs[0]
+        end_order_idx = sentence_order_idxs[-1]
+        powerline_freq = 60  # Assumption based on US recordings
+
+        start_cur_eeg_segment = [
+            seg for seg in self.eeg_segments if seg[-1] == start_order_idx
+        ][0]
+
+        end_cur_eeg_segment = [
+            seg for seg in self.eeg_segments if seg[-1] == end_order_idx
+        ][0]
+
+        brain_shift = 150  # Mental response time to stimuli
+        eeg_start_idx = int(start_cur_eeg_segment[0]) + brain_shift
+        eeg_end_idx = int(end_cur_eeg_segment[1]) + brain_shift
+        eeg_x = self.eeg_data[:, eeg_start_idx:eeg_end_idx]
+        eeg_x = notch_harmonics(eeg_x, powerline_freq, 500)
+        eeg_x = remove_drift(eeg_x, 500)
+
+        # Meta's preprocessing
+        eeg_x = preprocess_eeg(eeg_x)
+        eeg_feats = get_semg_feats_orig(eeg_x, hop_length=4, stft=False)
+        eeg_raw = apply_to_all(subsample, eeg_x.T, 400, 500)
+
+        label_int = np.array(self.text_transform.text_to_int(sentence))
+
+        # Dict Segment
+        data = {
+            "sentence": sentence,
+            "sentence_int": torch.from_numpy(label_int).pin_memory(),
+            "eeg_raw": torch.from_numpy(eeg_raw).pin_memory(),
+            "eeg_feats": torch.from_numpy(eeg_feats).pin_memory(),
+        }
+
+        if self.debug:
+            print(i, sentence)
+
+        return data
+
+    def __len__(self):
+        return len(self.sentences)
