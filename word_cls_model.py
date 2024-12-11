@@ -1,14 +1,13 @@
 import sys
+import random
 import pdb
 import torch
 import os
 import logging
 import tqdm
-import torch.nn as nn
-import torch.nn.functional as F
 from config import subjects
 from data_utils import save_model
-from read_eeg import EEGDataset, load_datasets
+from read_eeg import load_datasets
 from eeg_architecture import EEGWordClsModel
 import gc
 from pathlib import Path
@@ -18,7 +17,7 @@ import wandb
 FLAGS = flags.FLAGS
 flags.DEFINE_string("output_directory", "output",
                     "where to save models and outputs")
-flags.DEFINE_boolean("debug", True, "debug")
+flags.DEFINE_boolean("debug", False, "debug")
 flags.DEFINE_string("start_training_from", None,
                     "start training from this model")
 flags.DEFINE_float("l2", 0, "weight decay")
@@ -30,7 +29,9 @@ flags.DEFINE_integer("k", 10, "top k accuracy")
 flags.DEFINE_string("evaluate_saved", None,
                     "run evaluation on given model file")
 flags.DEFINE_string("wandb_name", "word_cls", "wandb run name")
-flags.DEFINE_boolean("use_wandb", False, "whether to enable wandb or not")
+flags.DEFINE_boolean("use_lr_scheduler", False,
+                     "whether to use lr scheduler or not")
+flags.DEFINE_boolean("use_wandb", True, "whether to enable wandb or not")
 
 
 def train_model(trainset, devset, device):
@@ -59,7 +60,10 @@ def train_model(trainset, devset, device):
         batch_size=FLAGS.batch_size,
     )
     n_chars = trainset.text_transform.vocabs_size
+
     model = EEGWordClsModel(devset.num_features, n_chars).to(device)
+    # vae = VAE(devset.num_features, n_chars).to(device)
+
     model_arch = str(model)
     model_path = os.path.join(expt_root, "model_arch.txt")
     arch_file = open(model_path, "w")
@@ -98,6 +102,10 @@ def train_model(trainset, devset, device):
         curr_lr = float(optim.param_groups[0]["lr"])
 
         for example in tqdm.tqdm(dataloader, "Train step", disable=None):
+
+            # if random.random() > 0.5:
+            #     example['eeg_raw'] = vae(example['words'])
+
             X = torch.stack(example["eeg_raw"]).float().to(
                 device)  # [B x T x C]
             pred = model(X)
@@ -122,7 +130,10 @@ def train_model(trainset, devset, device):
         accuracy = correct / total
         top_k_accuracy = top_k_correct / total if total > 0 else 0.0
         val_acc, val_topk = test(model, devset, device)
-        lr_sched.step(val_acc)
+
+        if FLAGS.use_lr_scheduler:
+            lr_sched.step(val_acc)
+
         logging.info(
             f"epoch {epoch_idx+1} - training loss: {train_loss:.4f} acc:{accuracy*100:.2f} "
             f"top-{k} acc: {top_k_accuracy*100:.2f} "

@@ -16,22 +16,6 @@ from collections import defaultdict
 
 base_dir = Path("/ocean/projects/cis240129p/shared/data/eeg_alice")
 
-subjects_used = [
-    "S01",
-    "S03",
-    "S04",
-    "S13",
-    "S18",
-    "S19",
-    "S37",
-    # "S38",
-    "S41",
-    "S42",
-    "S44",
-    "S48",
-]  # exclude 'S05' - less channels / other good channels: "S13", "S19"
-
-
 class EEGDataset(ConcatDataset):
     def __init__(
         self,

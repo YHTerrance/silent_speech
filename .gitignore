@@ -5,3 +5,10 @@ emg_data/
 deepspeech-0.7.0-models.pbmm
 deepspeech-0.7.0-models.scorer
 lm.binary
+models/
+ctcdecode
+emg_data
+output
+wandb
+*.txt
+*.out

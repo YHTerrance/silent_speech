@@ -155,9 +155,6 @@ def train_model(trainset, devset, device):
                     try:
                         pred_text = trainset.text_transform.int_to_text(
                             pred_int)
-                        # pred_text = pred_text.replace(
-                        #     trainset.text_transform.pad_token, ""
-                        # )
                     except:
                         print(f"!!!ERROR!!! batch idx: {batch_idx}, i: {i}")
                         exit()
